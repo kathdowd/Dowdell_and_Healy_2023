@@ -1,0 +1,2343 @@
+---
+title: "Lp_study"
+output: html_document
+---
+
+## R Markdown
+
+```{r}
+##install packages
+# install.packages("tidyverse")
+# install.packages("readxl")
+# install.packages("data.table")
+# install.packages("formattable")
+# install.packages("PerformanceAnalytics")
+# install.packages("cowplot")
+# install.packages("dplyr")
+# install.packages("httpuv")
+# install.packages("ggpubr")
+# install.packages("lubridate")
+# install.packages("Hmisc")
+# install.packages("GGally")
+# install.packages("ggtext")
+# install.packages("forcats")
+# install.packages("vegan")
+# install_github("vqv/ggbiplot")
+```
+
+```{r, echo=FALSE}
+##load packages
+library("tidyverse")
+library(readxl)
+library(data.table)
+library(formattable)
+library(PerformanceAnalytics)
+library(cowplot)
+library("dplyr")
+library('httpuv')
+library('ggplot2')
+library('scales')
+library('repr')
+library('viridis')
+library('ggpubr')
+library('lubridate')
+library("corrplot")
+library("Hmisc")
+library("GGally")
+library("forcats")
+#library("vegan")
+library(ggtext)
+```
+
+
+```{r} 
+##read in data files-> save to same directory as R code
+ raw_data <- read_excel("Lp_study_data.xlsx", sheet = "sample_data")
+ bldg_data<- read_excel("Lp_study_data.xlsx", sheet = "building_metadata")
+ qPCR_results<- read_excel("Lp_study_data.xlsx", sheet = "qPCR_results")
+ ddpcr_raw<- read_excel("Lp_study_data.xlsx", sheet = "ddPCR_results")
+```
+
+```{r}
+nulltoNA <- function(x) {
+  x[sapply(x, is.null)] <- NA
+  return(x)
+}
+```
+
+```{r}
+#clean up sample data types
+raw_data <- as.data.frame(raw_data)
+raw_data <- nulltoNA(raw_data)
+raw_data$sample_date <- as.Date(raw_data$sample_date)
+```
+
+```{r}
+#ensuring numeric values are categorized as numeric for sample data
+data_numeric<- raw_data %>%
+  mutate(`legiolert_mpn100ml` = as.numeric(legiolert_mpn100ml)) %>%
+  mutate(`cl_tot_mgl` = as.numeric(`cl_tot_mgl`)) %>%
+  mutate(`cl_free_mgl` = as.numeric(`cl_free_mgl`)) %>%
+  mutate(`flushtime_min` = as.numeric(`flushtime_min`)) %>%
+  mutate(`temp_c` = as.numeric(`temp_c`)) %>% 
+  mutate(`pH` = as.numeric(`pH`))
+```
+
+```{r}
+head(data_numeric)
+```
+
+```{r}
+###PROCESSING QPCR DATA#####
+qPCR_data<- qPCR_results %>%
+  filter(type == "sample") %>%
+  mutate(`date` = as.Date(`date`))
+totals<- qPCR_data %>%
+  dplyr::group_by(site_id) %>%
+  dplyr::summarize(total=n())
+totals
+```
+
+```{r}
+qpcr_df<-qPCR_data
+### imputation of qPCR data 
+##no amplification or less than LOD = 1/2 LOD
+##between LOD and LOQ = average of LOD and LOQ
+#LODs (lowest standard level with at least 95% amplification)
+Lab_E_lod <- 10.2 
+Lab_A_lod <- 100 
+Lab_D_lod <- 1
+Lab_B_lod<- 30
+#LOQs (lowest standard level with less than or equal to 25% coeff. of variance)
+Lab_E_loq <- 20.4 
+Lab_A_loq <- 100
+Lab_D_loq1<- 16.9
+Lab_D_loq2<- 19.7
+Lab_B_loq<- 30
+##converting to vectors
+Lab_E_lodloq<- c(Lab_E_lod,Lab_E_loq)
+Lab_A_lodloq<- c(Lab_A_lod,Lab_A_loq)
+Lab_B_lodloq<- c(Lab_B_lod,Lab_B_loq)
+Lab_D_lodloq1<- c(Lab_D_lod,Lab_D_loq1)
+Lab_D_lodloq2<- c(Lab_D_lod,Lab_D_loq2)
+##averages for values btw LOD and LOQ
+Lab_E_avglodloq<- mean(Lab_E_lodloq)
+Lab_A_avglodloq<- mean(Lab_A_lodloq)
+Lab_B_avglodloq<- mean(Lab_B_lodloq)
+Lab_D_avglodloq1<- mean(Lab_D_lodloq1)
+Lab_D_avglodloq2<- mean(Lab_D_lodloq2)
+```
+
+```{r}
+### if 2 or 3 wells amplified, then quantities should be averaged, one well amplifying = neg
+#find gmean of qPCR triplicates 
+qpcr_df <- qpcr_df %>%
+  mutate(`quantity_manual` = as.numeric(`quantity_manual`)) %>%
+  mutate(pos = ifelse(cq=="Undetermined",0,1)) %>% #column for undetermined wells
+  dplyr::group_by(`sample_id`) %>%
+  mutate(poswells=sum(pos)) %>%
+  mutate(quantity_clean=ifelse(poswells<=1,0.0001,quantity_manual)) %>% #replacing wells where one or zero of triplicates amplified with 1E-4 which is a placeholder value to be replaced by 1/2 LOD after gmean calculation
+  mutate(quantity_clean=ifelse(poswells>=2 & cq== 'Undetermined',NA,quantity_clean)) %>% 
+  mutate(quantity_geomean= exp(mean(log(quantity_clean),na.rm=TRUE))) %>%
+   dplyr::group_by(sample_id, site_id, lab) %>%
+  dplyr::summarise(avg_gc=mean(quantity_geomean), n=n(), sd=sd(quantity_clean), template_vol= mean(template_vol), elution_vol= mean(elution_vol), filtered_vol= mean(filtered_vol), dilution_factor= mean(dilution_factor))
+qpcr_df
+```
+
+```{r}
+#set quantity in wells without amplification to 1/2 the LOD
+qpcr_df$avg_gc[qpcr_df$lab== "Lab_E" & qpcr_df$avg_gc== 0.0001] <- Lab_E_lod/2
+qpcr_df$avg_gc[qpcr_df$lab== "Lab_A" & qpcr_df$avg_gc== 0.0001] <- Lab_A_lod/2
+qpcr_df$avg_gc[qpcr_df$lab== "Lab_D" & qpcr_df$avg_gc== 0.0001] <- Lab_D_lod/2
+qpcr_df$avg_gc[qpcr_df$lab== "Lab_B" & qpcr_df$avg_gc== 0.0001] <- Lab_B_lod/2
+##any samples less than LOD are considered negative
+#add column to indicate if averages were quantifiable=2 (result>loq), pos but unquantifiable = 1 (between lod and loq), or negative=0 (<lod or undetermined)
+##samples with average results less than the LOD get BLOD= 0
+qpcr_df["BLoD"]<- 2
+qpcr_df$BLoD[qpcr_df$lab== "Lab_E" & qpcr_df$avg_gc<=Lab_E_lod ] <- 0
+qpcr_df$BLoD[qpcr_df$lab== "Lab_A" & qpcr_df$avg_gc<=Lab_A_lod ] <- 0
+qpcr_df$BLoD[qpcr_df$lab== "Lab_D" & qpcr_df$avg_gc<=Lab_D_lod ] <- 0
+qpcr_df$BLoD[qpcr_df$lab== "Lab_B" & qpcr_df$avg_gc<=Lab_B_lod ] <- 0
+qpcr_df$BLoD[qpcr_df$lab== "Lab_E" & qpcr_df$avg_gc>Lab_E_lod & qpcr_df$avg_gc<Lab_E_loq ] <- 1
+qpcr_df$BLoD[qpcr_df$lab== "Lab_A" & qpcr_df$avg_gc>Lab_A_lod & qpcr_df$avg_gc<Lab_A_loq] <- 1
+qpcr_df$BLoD[qpcr_df$lab== "Lab_D" & qpcr_df$plate_num== 1  & qpcr_df$avg_gc>Lab_D_lod & qpcr_df$avg_gc<Lab_D_loq1] <- 1
+qpcr_df$BLoD[qpcr_df$lab== "Lab_D" & qpcr_df$plate_num== 2  & qpcr_df$avg_gc>Lab_D_lod & qpcr_df$avg_gc<Lab_D_loq2] <- 1
+qpcr_df$BLoD[qpcr_df$lab== "Lab_B" & qpcr_df$avg_gc>Lab_B_lod & qpcr_df$avg_gc<Lab_B_loq] <- 1
+#set quantities for wells that amplified but were below LOD to 1/2 the LOD
+qpcr_df$avg_gc[qpcr_df$lab== "Lab_E" & qpcr_df$avg_gc<Lab_E_lod ] <- Lab_E_lod/2
+qpcr_df$avg_gc[qpcr_df$lab== "Lab_A" & qpcr_df$avg_gc<Lab_A_lod ] <- Lab_A_lod/2
+qpcr_df$avg_gc[qpcr_df$lab== "Lab_D" & qpcr_df$avg_gc<Lab_D_lod] <- Lab_D_lod/2
+qpcr_df$avg_gc[qpcr_df$lab== "Lab_B" & qpcr_df$avg_gc<Lab_B_lod] <- Lab_B_lod/2
+#set quantities between LOD and LOQ to average of LOD and LOQ
+qpcr_df$avg_gc[qpcr_df$lab== "Lab_E" & qpcr_df$avg_gc>Lab_E_lod & qpcr_df$avg_gc<Lab_E_loq ] <- Lab_E_avglodloq
+qpcr_df$avg_gc[qpcr_df$lab== "Lab_A" & qpcr_df$avg_gc>Lab_A_lod & qpcr_df$avg_gc<Lab_A_loq] <- Lab_A_avglodloq
+qpcr_df$avg_gc[qpcr_df$lab== "Lab_D" & qpcr_df$plate_num== 1  & qpcr_df$avg_gc>Lab_D_lod & qpcr_df$avg_gc<Lab_D_loq1] <- Lab_D_avglodloq1
+qpcr_df$avg_gc[qpcr_df$lab== "Lab_D" & qpcr_df$plate_num== 2  & qpcr_df$avg_gc>Lab_D_lod & qpcr_df$avg_gc<Lab_D_loq2] <- Lab_D_avglodloq2
+qpcr_df
+#creating column that has the LOD
+qpcr_df$qpcr_lod[qpcr_df$lab== "Lab_E"] <- Lab_E_lod
+qpcr_df$qpcr_lod[qpcr_df$lab== "Lab_A" ] <- Lab_A_lod
+qpcr_df$qpcr_lod[qpcr_df$lab== "Lab_D"] <- Lab_D_lod
+qpcr_df$qpcr_lod[qpcr_df$lab== "Lab_B"] <- Lab_B_lod
+```
+
+```{r}
+## convert from gc/rxcn to gc/L
+qpcr_avg <- qpcr_df %>%
+  mutate(gc_L=avg_gc/template_vol*elution_vol/filtered_vol*dilution_factor*1E3) %>%
+  mutate(qpcr_lod_gc_l= qpcr_lod/template_vol*elution_vol/filtered_vol*dilution_factor*1E3)
+```
+
+```{r}
+#clean ddPCR tab
+keep= c("sample_id", "gc_rxn", "elution_vol", "filtered_vol", "df", "template_vol")
+ddpcr_raw <- ddpcr_raw[keep]
+Lab_C_lod<- 6.08
+Lab_C_loq<- 6.08
+ddpcr_data <- ddpcr_raw %>%
+  mutate("BLoD"=ifelse(gc_rxn == 0, 0, 2)) %>%
+  mutate("ddlod"= Lab_C_lod)
+ddpcr_data$gc_rxn[ddpcr_data$gc_rxn< Lab_C_lod ] <- Lab_C_lod/2
+ddpcr_clean<- ddpcr_data %>%
+  mutate(gc_L = gc_rxn/template_vol*elution_vol/filtered_vol*df*1E3) %>%
+  mutate(ddlod_gc_l = ddlod/template_vol*elution_vol/filtered_vol*df*1E3)
+```
+
+```{r}
+#merge qPCR df with ddPCR df on sample_id
+#we want to retain a column that indicates if it's BloD, BLoQ, or quantifiable
+data_pcr <- merge(qpcr_avg, ddpcr_clean, by= c("sample_id", "gc_L", "BLoD"), all=T )
+#merge ddPCR results from Lab_C with the main sample df
+data_all <- merge(data_pcr, data_numeric, by= "sample_id", all=T)
+data_all 
+qpcr_count<- data_all %>%
+  filter(!is.na(gc_L)) %>%
+  group_by(BLoD) %>%
+  dplyr::summarise(n=n())
+```
+
+```{r}
+#total for all samples
+all_samples <- data_all %>%
+  filter(sample_type == "sample") %>%
+  group_by(disinfectant) %>%
+  dplyr::summarize(n=n())
+```
+
+```{r}
+###MAIN DATA FILE CLEANING
+##removing samples without legiolert
+df <- data_all %>%
+  filter(sample_type == "sample") %>%
+  mutate("lod_l"= ifelse( !is.na(ddlod_gc_l),ddlod_gc_l,  qpcr_lod_gc_l)) %>%
+  select(-ddlod_gc_l, -qpcr_lod_gc_l)
+
+avg_lod<- df %>%
+  filter(!is.na(lod_l)) %>%
+  dplyr::group_by(building_id) %>%
+  dplyr::summarise(avg_lod= exp(mean(log(lod_l))))
+
+df <- merge(df, avg_lod, by= "building_id", all=T)
+```
+
+```{r}
+##set order of the data
+df$site_id <- factor(df$site_id.y, order = TRUE, levels =c('IN', 'OH', 'AZ', 'PA', 'WV', "QC", "MI", "VA", "MA", "CA", "CH"))
+df$disinfectant<- factor(df$disinfectant, order = TRUE, levels =c('free_chlorine', 'chloramines', 'none'))
+df$building_id<- factor(df$building_id, order = TRUE, levels =c('IN-1', 'IN-2', 'IN-3', "IN-4", "OH-1", "AZ-1", "PA-1","WV-1","WV-2","WV-3","WV-4","QC-1","QC-2","QC-3","MI-1","MI-2","MI-3","VA-1","VA-2","MA-1","MA-2","MA-3", "CA-1","CA-2","CA-3","CH-1"))
+```
+
+```{r}
+##convert wide table to long format
+#subset
+keep= c("site_id", "building_id", "sample_type", "tap_type", "tap_temp", "disinfectant", "condition", "temp_c","cl_tot_mgl", "legiolert_mpn100ml", "gc_L", "pH")
+data_subset= df[keep]
+df_long <- pivot_longer(data_subset,
+                        cols = c("temp_c","cl_tot_mgl", "legiolert_mpn100ml", "gc_L","pH"),
+                        names_to = 'Target',
+                        values_to = 'value')
+head(df_long)
+```
+
+```{r}
+##total buildings by disinfectant
+total_buildings<- df %>%
+  group_by(disinfectant, building_id)%>%
+  dplyr::summarize(n=n())
+##total samples by characteristics
+#by site
+total_site<- df %>%
+  group_by(site_id)%>%
+  dplyr::summarize(n=n())
+#by building
+total_bldg<- df %>%
+  group_by(building_id)%>%
+  dplyr::summarize(n=n())
+#by fixture type
+total_fixt<- df %>%
+  group_by(tap_type)%>%
+  dplyr::summarize(n=n())
+#by disinfectant type
+total_dis<- df %>%
+  group_by(disinfectant)%>%
+  dplyr::summarize(n=n())
+#by tap temp
+total_temp<- df %>%
+  group_by(tap_temp)%>%
+  dplyr::summarize(n=n())
+#by condition (fd v flushed)
+total_cond<- df %>%
+  group_by(condition)%>%
+  dplyr::summarize(n=n())
+#samples analyzed using qPCR
+qPCR_ddpcr<- df %>%
+  filter(!is.na(gc_L))
+qPCR_ddpcr
+#by building and sampling location
+total_samploc<- df %>%
+  distinct(sample_loc, .keep_all = T) %>%
+  group_by(building_id)%>%
+  dplyr::summarize(n=n())
+```
+
+```{r}
+##flush time summary stats
+flush <- df %>%
+  filter(condition == "flushed") %>%
+  filter(!is.na(flushtime_min))%>%
+  dplyr::summarize(avg=mean(flushtime_min),med= median(flushtime_min), min=min(flushtime_min), max=max(flushtime_min), n=n())
+```
+
+```{r}
+##SUMMARY STATS FOR LEGIOLERT RESULTS
+##total pos/neg Legiolert
+tot_leg<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  group_by(`pos_neg`) %>%
+  dplyr::summarize(n=n()) 
+##positive only Legiolert results 
+poslegio<- df %>%
+  filter(legiolert_mpn100ml>0.5)
+##positive and neg Legiolert results by building
+posneglegio<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  group_by(`pos_neg`, building_id) %>%
+  dplyr::summarize(n=n())
+## percent positive by building
+perposleg<- posneglegio %>%
+  group_by(building_id) %>%
+  dplyr::summarise(pos_neg,building_id, n, total_samples=sum(n)) %>%
+  ungroup() %>%
+  group_by(building_id, pos_neg) %>%
+  summarise(building_id, pos_neg, percent= (n/total_samples)*100,n,total_samples)
+##Legiolert mean and median by building in culture pos samples
+medlegio<- poslegio %>%
+  group_by(building_id) %>%
+  dplyr::summarize(median= median(legiolert_mpn100ml)*10, n=n())
+
+##pos_neg by disinfectant
+leg_dis<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  group_by(`pos_neg`, disinfectant) %>%
+  dplyr::summarize(n=n()) 
+#by disinfectant
+poslegiocl<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  group_by(`disinfectant`, pos_neg) %>%
+  dplyr::summarize(n=n()) %>%
+  ungroup() %>%
+  group_by(disinfectant) %>%
+  dplyr::summarise(total_samples=sum(n), n, disinfectant, pos_neg) %>%
+  ungroup() %>%
+  group_by(disinfectant, pos_neg) %>%
+  dplyr::summarise(percent= (n/total_samples)*100,n,total_samples)
+
+##median pos Leg conc by disinfectant
+medlegio_dis<- poslegio %>%
+  group_by(disinfectant) %>%
+  dplyr::summarize(median= median(legiolert_mpn100ml*10), n=n())
+#by condition
+fd<- df %>%
+  filter(condition=="first_draw")
+median(fd$legiolert_mpn100ml)
+fl<- df %>%
+  filter(condition=="flushed")
+##pos neg legiolert by condition
+poslegiocond<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  group_by(`pos_neg`, `condition`, .drop = FALSE) %>%
+  dplyr::summarize(n=n(), medleg= median(legiolert_mpn100ml)) 
+##pos legiolert FD
+poslegio_fd<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  filter(condition== "first_draw") %>%
+ filter(pos_neg== "positive")
+median(poslegio_fd$legiolert_mpn100ml)
+##pos legiolert flush
+poslegio_flushed<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  filter(condition== "flushed") %>%
+ filter(pos_neg== "positive")
+median(poslegio_flushed$legiolert_mpn100ml)
+##by building and disinfectant
+poslegio_bldg<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  group_by(`pos_neg`, `disinfectant`, building_id) %>%
+  dplyr::summarize(n=n(), median=median(legiolert_mpn100ml))
+##by building -- free cl only
+poslegio_bldgfree<- df %>%
+  filter(disinfectant=="free_chlorine") %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  group_by(`pos_neg`, building_id) %>%
+  dplyr::summarize(n=n(), median=median(legiolert_mpn100ml))
+##shower culture positivity
+showers<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  filter(tap_type == "shower")
+showers_sum<- showers %>%
+  dplyr::group_by(pos_neg) %>%
+  dplyr::summarise(n=n())
+##shower qPCR/ddPCR positivity
+showers_gc<-qPCR_ddpcr  %>%
+  mutate(`pos_neg` = ifelse(BLoD==0, "negative","positive")) %>%
+  filter(tap_type == "shower")
+showers_gcsum<- showers_gc %>%
+  dplyr::group_by(pos_neg) %>%
+  dplyr::summarise(n=n())
+##faucet culture positivity
+faucet<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  filter(tap_type == "faucet")
+faucet_sum<- faucet %>%
+  dplyr::group_by(pos_neg) %>%
+ dplyr:: summarise(n=n())
+##faucet qPCR/ddPCR positivity
+faucet_gc<- qPCR_ddpcr %>%
+  mutate(`pos_neg` = ifelse(BLoD==0, "negative","positive")) %>%
+  filter(tap_type == "faucet")
+faucet_gcsum<- faucet_gc %>%
+  dplyr::group_by(pos_neg) %>%
+  dplyr::summarise(n=n())
+faucet_notcold<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  filter(tap_type == "faucet") %>%
+    filter(tap_temp != "cold")
+##pos neg Legiolert results and concentrations by tap type
+poslegiotap<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  dplyr::group_by(`pos_neg`, `tap_type`) %>%
+  dplyr::summarize(n=n(), median=median(legiolert_mpn100ml))
+##by tap type- hot and mixed water
+poslegiotap_hot<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  filter(tap_temp == "hot" | tap_temp == "mixed")%>%
+  dplyr::group_by(`pos_neg`, `tap_type`) %>%
+  dplyr::summarize(n=n())
+##total sample counts by disinfectant and type
+disinfect_cond <- df %>%
+  dplyr::group_by(disinfectant, condition) %>%
+  dplyr::summarize(n=n())
+poslegio_fd<- df %>%
+  filter(condition== "first_draw") %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  dplyr::group_by(`pos_neg`) %>%
+  dplyr::summarize(n=n(), avg=mean(legiolert_mpn100ml), median=median(legiolert_mpn100ml))
+poslegio_flush<- df %>%
+  filter(condition== "flushed") %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+ dplyr:: group_by(`pos_neg`) %>%
+  dplyr::summarize(n=n(), avg=mean(legiolert_mpn100ml), median=median(legiolert_mpn100ml))
+##total above detection limit
+ADL<- df %>%
+  filter(legiolert_mpn100ml>2272.6)
+
+###median concentration in buildings with multiple culture positive samples
+pos_bldg_leg_pos<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+   filter(building_id == "PA-1" | building_id == "QC-3" | building_id == "AZ-1"| building_id == "IN-1" | building_id == "CH-1") %>%
+  filter(pos_neg=="positive") %>%
+  dplyr::group_by(`pos_neg`, building_id) %>%
+  dplyr::summarize(n=n(), median_mpn_l=median(legiolert_mpn100ml*10))
+
+perposleg_posbldgs<- perposleg %>%
+  filter(building_id == "PA-1" | building_id == "QC-3" | building_id == "AZ-1"| building_id == "IN-1" | building_id == "CH-1")
+
+###Percent Leg positives by flush  --- Legiolert
+posnegleg_cond<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  dplyr::group_by(`pos_neg`, `condition`, `disinfectant`, .drop = FALSE) %>%
+  dplyr::summarize(n=n()) %>%
+  dplyr::group_by(`condition`, `disinfectant`, .drop = FALSE) %>%
+  mutate("percentage" = n/sum(n)*100) %>%
+  ungroup 
+perposleg
+```
+
+```{r}
+###QPCR/DDPCR RESULTS
+qpcr_only<- qPCR_ddpcr %>%
+  filter(site_id != "PA")
+
+qpcr_ddpcr_bldgs <- qPCR_ddpcr %>%
+  dplyr::group_by(building_id) %>%
+  dplyr::summarise(n=n())
+
+qpcr_ddpcr_dis <- qPCR_ddpcr %>%
+  dplyr::group_by(disinfectant) %>%
+  dplyr::summarise(n=n())
+
+##number of qpcr/ddPCR quantitative
+qpcr_pn<- qPCR_ddpcr %>%
+    mutate(`pos_neg` = ifelse(`BLoD` == 2, "quant","non-quant")) %>%
+  group_by(`pos_neg`) %>%
+  dplyr::summarize(n=n())
+
+##number of qpcr/ddPCR positive
+qpcr_totals<- qPCR_ddpcr %>%
+  mutate(`pos_neg` = ifelse(`BLoD`>0, "pos","neg")) %>%
+  group_by(`pos_neg`) %>%
+  dplyr::summarize(n=n())
+  
+##qPCR/ddPCR positive samples
+posqpcr<-  qPCR_ddpcr %>%
+  filter(BLoD>0) 
+##qPCR/ddPCR positive by building 
+posqpcr_bldgs<-  posqpcr %>%
+  group_by(building_id) %>%
+ dplyr:: summarise (median=median(gc_L), n=n())
+##qPCR/ddPCR positive by disinfectant 
+posqpcr_dis<-  posqpcr %>%
+  group_by(disinfectant) %>%
+ dplyr:: summarise (median=median(gc_L), n=n())
+##pos qpcr-- monocl only
+posqpcr_mono<-  posqpcr %>%
+  filter(disinfectant=="chloramines")
+#percent positivity by building
+posnegqpcr_bldg<-  qPCR_ddpcr %>%
+  mutate(`pos_neg` = ifelse(`BLoD`>0, "pos","neg")) %>%
+  dplyr::group_by(`pos_neg`, building_id) %>%
+  dplyr::summarize(n=n()) %>%
+  ungroup() %>%
+  dplyr::group_by(building_id) %>%
+  dplyr::summarise(building_id, pos_neg, n, tot_samp=sum(n)) %>%
+  ungroup %>%
+  mutate(percent=n/tot_samp)
+posnegqpcr_bldg
+#percent positivity by disinfectant 
+posnegqpcr_dis<-  qPCR_ddpcr %>%
+  mutate(`pos_neg` = ifelse(`BLoD`>0, "pos","neg")) %>%
+  dplyr::group_by(`pos_neg`, disinfectant) %>%
+  dplyr::summarize(n=n()) %>%
+  ungroup() %>%
+  dplyr::group_by(disinfectant) %>%
+  dplyr::summarise(disinfectant, pos_neg, n, tot_samp=sum(n)) %>%
+  ungroup %>%
+  mutate(percent=n/tot_samp)
+###Percent Leg positives by flush --- qPCR
+poslegio_qpcr<- df %>%
+  filter(!is.na(gc_L)) %>%       #samples with qPCR results
+  dplyr::group_by(`BLoD`, `condition`, `disinfectant`, .drop = FALSE) %>%
+  dplyr::summarize(n=n()) %>%
+  dplyr::group_by(`condition`, `disinfectant`, .drop = FALSE) %>%
+  filter(disinfectant !="none") %>%
+  mutate("percentage" = n/sum(n)*100) %>%
+  ungroup %>%
+  mutate(`percentage`=ifelse(percentage!="NaN",`percentage`,0))
+```
+
+```{r}
+## Figure 1A - L. pneumophila MPN/L by building
+leg_fig1<- df %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive"))
+  
+fig_1a<- leg_fig1 %>%
+  ggplot(aes(x = building_id, y = legiolert_mpn100ml*10)) +
+  geom_boxplot(na.rm = TRUE, outlier.shape = NA) + 
+  annotate(geom = "rect", xmin = 0, xmax = 14.5, ymin = 1, ymax = 1E5, fill = "#33638d", alpha = 0.15)+
+  annotate(geom = "rect", xmin = 14.5, xmax = 25.5, ymin = 1, ymax = 1E5, fill = "#95d840", alpha = 0.1)+
+  annotate(geom = "rect", xmin = 25.5, xmax = 26.5, ymin = 1, ymax = 1E5, fill = "#5901a5",alpha = 0.1)+
+  geom_jitter(aes(color= condition), size=2, alpha=0.7,  position=position_dodge(0.3)) + 
+  geom_hline(yintercept=10, linetype="dashed")+ 
+  geom_hline(yintercept=22726, linetype="dotted")+ 
+  #scale_shape_manual(values = c("negative"=22, "positive"=16), labels=c("Negative", "Positive"))+
+  scale_y_log10(breaks = c(1, 10, 100, 1E3,1E4, 1E5), limits = c(1, 1E5), labels = trans_format("log10", math_format(10^.x)), expand=c(0,0))+
+  scale_color_viridis_d(begin = 0.3, end = 0.8, labels = c("First Draw", "Flushed"))+
+  labs(x= "Building", y= "*L. pneumophila* (MPN/L)")+
+  theme_classic(base_size=10)+
+  theme(legend.position="top",
+        axis.title.y = ggtext::element_markdown(size=10,face="bold", color="black"), 
+        axis.title.x = element_blank(),
+        axis.text.x =element_text(size=10,face="bold", color="black", angle = -45, vjust = 0.2), 
+        axis.text.y =element_text(size=8,face="bold", color="black"), 
+        legend.title=element_blank(),
+        legend.text =element_text(size=10,face="bold", color="black"), 
+        legend.box.margin = unit(c(0,0,0,0), "cm"),
+         plot.margin=unit(c(0.5,1,1,1), "cm"))
+fig_1a
+jpeg("fig_1a.jpeg", units = "in", width=7, height=5, res=400)
+print(fig_1a)
+dev.off()
+```
+
+```{r}
+##Figure 1B - L. pneumophila MPN/L by disinfectant and sample type
+fig_1b<- df %>%
+  filter(disinfectant !="none")%>%
+  mutate(disinfectant=factor(disinfectant, order = TRUE, levels =c("free_chlorine", "chloramines"))) %>%
+  ggplot(aes(x=disinfectant, y= legiolert_mpn100ml*10))+
+  geom_boxplot(aes(fill=disinfectant), outlier.shape = NA, alpha=0.3)+
+  geom_jitter(aes(color=condition), size=2, alpha=0.7,  position=position_dodge(0.3), show_guide = FALSE)+
+  geom_hline(yintercept = 10, linetype="dashed")+
+    geom_hline(yintercept = 22726, linetype="dotted")+
+  scale_fill_manual(values=c("#33638d", "#95d840"), labels=c("Free Chlorine","Monochloramine"))+
+  scale_color_viridis_d(begin = 0.3, end = 0.8, label = c("First Draw", "Flushed"))+
+  scale_x_discrete(labels=c("Free Chlorine","Monochloramine","None"))+
+  labs(x= "Disinfectant", y= "*L. pneumophila* (MPN/L)")+
+  scale_y_log10(breaks = c(1, 10, 100, 1E3,1E4, 1E5), limits = c(1, 1E5), labels = trans_format("log10", math_format(10^.x)), expand=c(0,0))+
+   theme_classic(base_size=10)+
+  theme(legend.position="none",
+        axis.title.y = ggtext::element_markdown(size=10,face="bold", color="black"), 
+        axis.title.x = element_blank(),
+        axis.text.y =element_text(size=10,face="bold", color="black"), 
+        axis.text.x =element_text(size=10,face="bold", color="black"), 
+        legend.title=element_blank(),
+        legend.text =element_text(size=8,face="bold", color="black"))
+fig_1b
+jpeg("fig_1b.jpeg", units = "in", width=3, height=4, res=300)
+print(fig_1b)
+dev.off()
+```
+
+```{r}
+##Figure S3 - L. pneumophila gene copies by building
+fig_s3 <- df %>%
+  mutate(BLoD=as.character(BLoD)) %>%
+  ggplot(aes(x = building_id, y = `gc_L`, group=building_id)) +
+  geom_boxplot(na.rm = TRUE, outlier.shape = NA) + 
+  annotate(geom = "rect", xmin = .5, xmax = 14.5, ymin = 1, ymax = 1E7, fill = "#33638d",alpha = 0.1)+
+  annotate(geom = "rect", xmin = 14.5, xmax = 25.5, ymin = 1, ymax = 1E7, fill = "#95d840",alpha = 0.1)+
+  annotate(geom = "rect", xmin = 25.5, xmax = 26.5, ymin = 1, ymax = 1E7, fill = "#5901a5",alpha = 0.15)+
+  geom_jitter(aes(color=condition, shape=BLoD), size=2, alpha=0.7,  position=position_dodge(0.3)) + 
+  scale_shape_manual(values = c("0"=22, "1"=23, "2"=16), labels=c("<LOD", ">LOD & <LOQ",">LOQ"))+
+  scale_y_log10(limits=c(1,1E7), breaks=c(1,1E1,1E2,1E3,1E4,1E5,1E6,1E7), expand = c(0,0),  labels= trans_format("log10", math_format(10^.x)))+
+  geom_errorbar(aes(ymin = avg_lod, ymax=avg_lod), width=0.6, position=position_dodge(0.05), linetype= "dotted" )+
+ scale_color_viridis_d(begin = 0.3, end = 0.8, labels=c("First Draw", "Flushed"))+
+  labs(x="Building", y="*L. pneumophila* (gc/L)") + 
+  theme_classic(base_size=16)+
+  theme(axis.title.y = ggtext::element_markdown(size=8,face="bold", color="black"), 
+        axis.title.x = element_text(size=8,face="bold", color="black"),
+        axis.text.x =element_text(size=8,face="bold", color="black", angle = -45, vjust = 0.2),
+        axis.text.y =element_text(size=8,face="bold", color="black"), 
+        legend.title=element_blank(),
+        legend.text =element_text(size=6,face="bold", color="black"),
+        plot.margin=unit(c(1,1,-0.5,1), "cm"),
+        legend.position = "top",
+        legend.key.height = unit(0.4, 'cm'),
+        legend.key.width = unit(0.1, 'cm'),
+        legend.box.margin = margin(0, 0.01, 0, 0.01),
+        legend.text.align = (0))
+
+fig_s3
+jpeg("fig_s3.jpeg", units = "in", width=8, height=4, res=600)
+print(fig_s3)
+dev.off()
+```
+
+```{r}
+##Figure S4 - L. pneumophila gc/L by disinfectant and sample type
+fig_s4<- df %>%
+  mutate(disinfectant=factor(disinfectant, order = TRUE, levels =c("free_chlorine", "chloramines", "none"))) %>%
+  mutate(BLoD=factor(BLoD, order = TRUE, levels =c("0", "1", "2"))) %>%
+  filter(!is.na(BLoD)) %>%
+  ggplot(aes(x=disinfectant, y= gc_L))+
+  geom_boxplot(aes(fill=disinfectant), outlier.shape = NA, alpha=0.3)+
+  geom_jitter(aes(color=condition, shape=BLoD), size=2, alpha=0.7,  position=position_dodge(0.3))+
+  scale_shape_manual(values = c("0"=22, "1"=23, "2"=16), labels=c("<LOD", ">LOD & <LOQ",">LOQ"))+
+  scale_fill_manual(values=c("#33638d", "#95d840", "#5901a5"), labels=c("Free Chlorine","Monochloramine","None"))+
+  scale_color_viridis_d(begin = 0.3, end = 0.8, label = c("First Draw", "Flushed"))+
+  scale_x_discrete(labels=c("Free Chlorine","Monochloramine","None"))+
+  labs(x= "Disinfectant", y= "*L. pneumophila* (gc/L)")+
+  scale_y_log10(limits = c(1, 1E7), labels = trans_format("log10", math_format(10^.x)), expand=c(0,0))+
+   theme_classic(base_size=12)+
+  theme(legend.position="top",
+        axis.title.y = ggtext::element_markdown(size=8,face="bold", color="black"), 
+        axis.title.x = element_text(size=8,face="bold", color="black"),
+        axis.text.y =element_text(size=8,face="bold", color="black"), 
+        axis.text.x =element_text(size=8,face="bold", color="black"), 
+        legend.title=element_blank(),
+        legend.text =element_text(size=6,face="bold", color="black"))
+fig_s4
+jpeg("fig_s4.jpeg", units = "in", width=7, height=5, res=400)
+print(fig_s4)
+dev.off()
+```
+
+```{r}
+##culture-positive buildings
+allbldg_median <- df %>%
+  filter(legiolert_mpn100ml>0.5)%>%
+  dplyr::group_by(building_id) %>%
+  dplyr::summarise(n=n(), median=median(legiolert_mpn100ml*10))
+
+pos_bldgs<- df %>%
+  filter(building_id == "IN-1"| building_id == "AZ-1"| building_id =="PA-1"| building_id == "QC-3" | building_id == "CH-1")
+
+pos_bldgs_sum<- pos_bldgs %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  dplyr::group_by(building_id, pos_neg) %>%
+  dplyr::summarise(count=n()) %>%
+  ungroup() %>%
+  group_by(building_id)%>%
+  dplyr::summarise(total= sum (count), percentage= count/sum(count)*100, count, pos_neg)
+
+pos_bldgs_mpn<- pos_bldgs %>%
+  filter(legiolert_mpn100ml>0.5) %>%
+  dplyr::group_by(building_id) %>%
+  dplyr::summarise(n=n(), median=median(legiolert_mpn100ml*10))
+```
+
+```{r}
+##positive buildings by qpcr
+pos_qpcr<- df %>%
+  filter(!is.na(gc_L)) %>%
+  filter(building_id == "IN-1"| building_id == "AZ-1"| building_id =="PA-1"| building_id == "QC-3" | building_id == "CH-1") %>%
+  mutate(`pos_neg` = ifelse(BLoD == 0, "negative","positive")) %>%
+  group_by(building_id, pos_neg) %>%
+  dplyr::summarise(count=n()) %>%
+  ungroup() %>%
+  group_by(building_id)%>%
+  dplyr::summarise(total= sum (count), percentage= count/sum(count)*100, count, pos_neg)
+  
+pos_bldgs_qpcr<- df %>%
+  filter(!is.na(gc_L)) %>%
+  filter(BLoD>0) %>%
+  group_by(building_id) %>%
+  dplyr:: summarise(n=n(), median=median(gc_L), scientific(max(gc_L)))
+```
+
+```{r}
+###Building CH only
+swiss <- df %>%
+  filter(building_id=="CH-1") %>%
+  mutate(`pos_neg` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  group_by(pos_neg, tap_temp) %>%
+  dplyr::summarise(n=n())
+```
+
+```{r}
+##Building PA-1 only
+PA<- df %>%
+  filter(site_id.y=="PA")
+PA_lppos<- PA %>%
+  filter(legiolert_mpn100ml>0.5)
+PA_gcpos<- PA %>%
+  filter(BLoD>0)
+PA_fd_legpos<- PA_lppos %>%
+  filter(condition=="first_draw") 
+median(PA_fd_legpos$legiolert_mpn100ml)
+```
+
+```{r}
+##access restricted prior to sampling
+access<- df %>%
+  filter(building_id == "PA-1" | building_id == "MI-2" | building_id == "MI-3" | building_id == "QC-3")
+access_fd <- access %>%
+  filter(condition== "first_draw") %>%
+  mutate(pos_neg= ifelse(cl_tot_mgl>0.04, "pos", "neg"))
+
+median(access_fd$cl_tot_mgl)
+length(access_fd$cl_tot_mgl)
+
+access_fd_sum<- access_fd %>%
+  group_by(pos_neg) %>%
+  dplyr::summarise(n=n())
+```
+
+```{r}
+#percent positivity by building
+building_pos_pcr <- df %>% group_by(building_id, BLoD) %>% dplyr::summarise(n=n())
+building_pos_pcr
+df["leg_BLoD"]<- 2
+df$leg_BLoD[df$legiolert_mpn100ml == 0.5 ] <- 0
+df$leg_BLoD[df$legiolert_mpn100ml > 0.5 ] <- 1
+building_pos <- df %>% group_by(building_id, leg_BLoD) %>% dplyr::summarise(n=n())
+building_pos
+```
+
+
+```{r}
+## missing data
+#no temp
+missing_temp <- df %>%
+  filter(is.na(temp_c))
+
+missing_pH <- df %>%
+  filter(is.na(pH))
+
+missing_cl <- df %>%
+  filter(disinfectant != "none") %>%
+  filter(is.na(cl_tot_mgl))
+
+##DFs without missing WQ data
+#samples with temp measurements
+with_temp <- df %>%
+  filter(temp_c != is.na(temp_c))
+#samples with Cl measurements
+with_cl <- df %>%
+  filter(cl_tot_mgl != is.na(cl_tot_mgl))
+#summary samples with Cl measurements
+with_cl_sum<- df %>%
+  filter(cl_tot_mgl != is.na(cl_tot_mgl)) %>%
+  group_by(`disinfectant`) %>%
+  dplyr::summarize(n=n())
+#samples with pH measurements
+with_ph <- df %>%
+  filter(pH != is.na(pH))
+#samples with DO measurements
+with_DO <- df %>%
+  filter(do_mgl != is.na(do_mgl))
+# samples with cond
+with_cond<- df %>%
+  filter(`cond_uS-cm2` != is.na(`cond_uS-cm2`))
+```
+
+```{r}
+#### Cl results
+#overall cl median (n=182)
+median(with_cl$cl_tot_mgl)
+
+##monocl median cl (n=69)
+mono_cl<- with_cl %>%
+  filter(disinfectant== "chloramines")
+median(mono_cl$cl_tot_mgl)
+
+##monocl FD median cl (n= 54)
+mono_clfd<- mono_cl %>%
+  filter(condition== "first_draw")
+median(mono_clfd$cl_tot_mgl)
+
+##monocl Flush median cl (n= 15)
+mono_clflush<- mono_cl %>%
+  filter(condition== "flushed")
+median(mono_clflush$cl_tot_mgl)
+
+##free cl median cl (n= 113)
+free_cl<- with_cl %>%
+  filter(disinfectant== "free_chlorine")
+median(free_cl$cl_tot_mgl)
+
+##free cl FD median cl (n= 92)
+free_clfd<- free_cl %>%
+  filter(condition== "first_draw")
+median(free_clfd$cl_tot_mgl)
+
+##free cl Flush median cl (n= 21)
+free_clflush<- free_cl %>%
+  filter(condition== "flushed")
+median(free_clflush$cl_tot_mgl)
+
+### Chlorine positivity using <0.05 as the cut off for positive samples
+cl_posneg<- with_cl %>%
+  mutate(`pos_neg` = ifelse(cl_tot_mgl < 0.05, "negative","positive"))
+
+#total samples by cl positivity
+cl_posneg_sum<- cl_posneg %>%
+  dplyr::group_by(pos_neg) %>%
+  dplyr::summarise(n=n())
+
+#FD samples by cl positivity
+cl_fd<- cl_posneg %>%
+  filter(condition == "first_draw") 
+
+cl_fd_sum<- cl_posneg %>%
+  filter(condition == "first_draw") %>%
+  dplyr::group_by(`pos_neg`) %>%
+  dplyr::summarise(n=n())
+
+cl_fd_sumdis<- cl_posneg %>%
+  filter(condition == "first_draw") %>%
+  dplyr::group_by(`pos_neg`, disinfectant) %>%
+  dplyr::summarise(n=n())
+
+#Flushed samples by cl positivity
+cl_flush<- cl_posneg %>%
+  filter(condition == "flushed") 
+cl_flush_sum<- cl_posneg %>%
+  filter(condition == "flushed") %>%
+  dplyr::group_by(`pos_neg`, disinfectant) %>%
+  dplyr::summarise(n=n())
+
+#total samples by cl positivity and disinfectant
+cl_posneg_dis<- cl_posneg %>%
+  group_by(`pos_neg`, disinfectant) %>%
+  dplyr::summarise(n=n())
+
+## number of samples w/ Cl of at least 0.4 mg/L
+cl_high<- with_cl %>%
+  filter(cl_tot_mgl>=0.4)
+
+#high Cl samples from free cl buildings
+cl_high_free<- cl_high %>%
+  filter(disinfectant== "free_chlorine")
+
+## number of samples w/ Cl of at least <0.1 mg/L
+cl_low<- with_cl %>%
+  filter(cl_tot_mgl<=0.1)
+cl_low_pos<- cl_low %>%
+  filter(legiolert_mpn100ml >0.5)
+
+mono_lowcl<- with_cl %>%
+      filter(disinfectant== "chloramines") %>%
+    filter(cl_tot_mgl<=0.1)
+```
+
+```{r}
+##Cl and Legiolert Results
+##Median cl in culture-positive samples
+pos_cl<- with_cl %>%
+  filter(legiolert_mpn100ml>0.5)
+median(pos_cl$cl_tot_mgl)
+
+##Median cl in culture-negative samples
+neg_cl<- with_cl %>%
+  filter(legiolert_mpn100ml==0.5)
+median(neg_cl$cl_tot_mgl)
+
+##Counts of Legiolert positive samples with chlorine less than and greater than 0.1
+poslegio_lowhighcl<- pos_cl %>%
+  mutate(cl_low= ifelse(cl_tot_mgl>0.1, "high", "low")) %>%
+  dplyr::group_by(disinfectant, cl_low) %>%
+  dplyr::summarise(n=n())
+
+##same as previous but using 0.2 as threshold
+poslegio_lowhighcl2<- pos_cl %>%
+  mutate(cl_low= ifelse(cl_tot_mgl>0.2, "high", "low")) %>%
+  dplyr::group_by(disinfectant, cl_low) %>%
+  dplyr::summarise(n=n())
+
+##pos legiolert in free cl samples
+poslegio_freecl<- poslegio %>%
+  filter(disinfectant=="free_chlorine")
+
+##monoCl samples with low to no Cl
+lowcl_mono<- with_cl %>%
+  filter(disinfectant=="chloramines") %>%
+  mutate(cl_low= ifelse(cl_tot_mgl>0.1, "high", "low")) %>%
+  filter(cl_low=="low")
+
+``` 
+
+```{r}
+###qPCR/ddPCR positive samples with cl measurements
+pos_gc<- with_cl %>%
+    filter(BLoD >0) %>%
+  filter(disinfectant== "free_chlorine")
+
+pos_gc_lowcl<- pos_gc%>%
+    filter(cl_tot_mgl<=0.1) %>%
+  filter(disinfectant== "free_chlorine")
+
+free_big_total<- with_cl %>%
+  mutate(free_tot= cl_tot_mgl- cl_free_mgl) %>%
+  filter(disinfectant== "free_chlorine")
+    
+```
+
+```{r}
+##Figure S5 - Cl, pH, and temp boxplots by site
+FigS5_data<- df_long %>%
+  filter(Target != "legiolert_mpn100ml" & Target != "gc_L")
+
+fig_s5<- FigS5_data %>%
+  ggplot(aes(x = building_id, y = `value`)) +
+  geom_boxplot(na.rm = TRUE, outlier.shape = NA) + 
+  geom_jitter(aes(fill=condition, shape=condition), size=2, alpha=0.7,  position=position_dodge(0.4)) + 
+  scale_shape_manual(values = c(22, 23), labels=c("First Draw", "Flushed"))+
+ scale_fill_viridis_d(begin = 0.3, end = 0.8, labels=c("First Draw", "Flushed"))+
+  labs(x="Building", y="Value") + 
+  theme_classic(base_size=10)+
+  theme(axis.title.y = element_blank(), 
+        axis.title.x = element_blank(),
+        axis.text.x =element_text(size=10,face="bold", color="black", angle = -45, vjust = 0.2),
+        axis.text.y =element_text(size=10,face="bold", color="black"), 
+        legend.position = "none")+
+    facet_wrap(~Target, scales = "free", nrow = 3)+
+  theme(strip.text.x = element_text(size=0), 
+        strip.background = element_blank())
+fig_s5
+jpeg("fig_s5.jpeg", units = "in", width=8, height=7, res=800)
+print(fig_s5)
+dev.off()
+```
+
+
+```{r}
+library(pals)
+fig2_data<- with_cl %>%
+  select(sample_id, building_id, tap_temp, condition, disinfectant, pH,cl_tot_mgl, temp_c, legiolert_mpn100ml)
+
+
+## Figure 2A - L. pneumophila MPN/L v. Chlorine
+fig_2a<- with_cl %>%
+  ggplot(aes(x=cl_tot_mgl, y=legiolert_mpn100ml*10))+
+  geom_point(size=2, aes(shape= disinfectant, fill=building_id), color="black", alpha=0.7) +
+  geom_hline(yintercept=10, linetype="dashed")+
+  geom_hline(yintercept=22726, linetype="dotted")+
+  scale_y_log10(breaks = c(1, 1E1, 1E2, 1E3,1E4, 1E5), limits = c(4, 1E5), expand=c(0,0),  labels =  trans_format("log10", math_format(10^.x)))+
+  scale_x_continuous(breaks= c(0, 1, 2, 3))+
+  scale_fill_manual(values=as.vector(polychrome(26)))+
+  labs(x="Chlorine Residual (mg/L Cl2)", y= "*L. pneumophila* (MPN/L)", shape="Disinfectant") + 
+  scale_shape_manual(values=c(21,22), labels=c("Free Chlorine", "Monochloramine"))+
+  guides(fill=guide_legend(override.aes=list(shape=21),nrow = 3),shape=F)+
+  theme_classic(base_size=12)+
+  theme(
+        legend.position = "none",
+        legend.title = element_blank(),
+        axis.title.y =ggtext::element_markdown(size=8, face="bold", color="black"), 
+        axis.title.x = element_text(color="black", size=8, face="bold"),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"), 
+        plot.margin=unit(c(0,0,0,0), "cm"))
+fig_2a
+jpeg("fig_2a.jpeg", units = "in", width=2.5, height=3, res=600)
+print(fig_2a)
+dev.off()
+
+## Figure 2B - L. pneumophila MPN/L v. pH
+fig_2b<- with_ph %>%
+  ggplot(aes(x=pH, y=legiolert_mpn100ml*10))+
+  geom_point(size=2, aes(shape= disinfectant, fill=building_id), color="black", alpha=0.7) +
+  geom_hline(yintercept=10, linetype="dashed")+
+  geom_hline(yintercept=22726, linetype="dotted")+
+  scale_y_log10(breaks = c(1, 1E1, 1E2, 1E3,1E4, 1E5), limits = c(4, 1E5), expand=c(0,0),  labels =  trans_format("log10", math_format(10^.x)))+
+  scale_x_continuous(breaks= c(7, 8, 9, 10))+
+  scale_fill_manual(values=as.vector(polychrome(26)))+
+  labs(x="pH", y= "*L. pneumophila* (MPN/L)", shape="Disinfectant") + 
+  scale_shape_manual(values=c(21,22), labels=c("Free Chlorine", "Monochloramine"))+
+  guides(fill=guide_legend(override.aes=list(shape=21),nrow = 3), shape=F)+
+  theme_classic(base_size=12)+
+  theme(
+        legend.position = "none",
+        legend.title = element_blank(),
+        axis.title.y  = element_blank(),
+        #axis.title.y =ggtext::element_markdown(size=8, face="bold", color="black"), 
+        axis.title.x = element_text(color="black", size=8, face="bold"),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"),
+        plot.margin=unit(c(0,0,0,0), "cm"))
+fig_2b
+jpeg("fig_2b.jpeg", units = "in", width=2.5, height=3, res=600)
+print(fig_2b)
+dev.off()
+
+## Figure 2C - L. pneumophila MPN/L v. temp
+fig_2c<- with_temp %>%
+  ggplot(aes(x=temp_c, y=legiolert_mpn100ml*10))+
+  geom_point(size=2, aes(shape= tap_temp, fill=building_id), color="black", alpha=0.7) +
+  geom_hline(yintercept=10, linetype="dashed")+
+  geom_hline(yintercept=22726, linetype="dotted")+
+  scale_y_log10(breaks = c(1, 1E1, 1E2, 1E3,1E4, 1E5), limits = c(4, 1E5), expand=c(0,0), labels =  trans_format("log10", math_format(10^.x)))+
+  #scale_x_continuous(breaks= c(7, 7.5, 8, 8.5,  9, 9.5, 10, 10.5), limits=c(7,10.5))+
+  scale_fill_manual(values=as.vector(polychrome(26)))+
+  labs(x="Temperature (C)", y= "*L. pneumophila* (MPN/L)", shape="Disinfectant") + 
+  scale_shape_manual(values=c(25,23,24), labels=c("Cold", "Hot", "Mixed"), name= "Outlet Temp")+
+  guides(fill=guide_legend(override.aes=list(shape=21), nrow = 3), shape=F)+
+  theme_classic(base_size=12)+
+  theme(
+        legend.position = "top",
+        legend.title = element_blank(),
+        axis.title.y = element_blank(),
+        #axis.title.y =ggtext::element_markdown(size=8, face="bold", color="black"), 
+        axis.title.x = element_text(color="black", size=8, face="bold"),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"),
+        plot.margin=unit(c(0,0,0,0), "cm"))
+fig_2c
+jpeg("fig_2c.jpeg", units = "in", width=2.5, height=3, res=600)
+print(fig_2c)
+dev.off()
+
+fig_2<- ggarrange(fig_2a,fig_2b,fig_2c, ncol=3, nrow=1, font.label = list(size = 10, color = "black", face = "bold", family = NULL), legend = "top", common.legend = T, align = c("hv"))
+fig_2
+
+jpeg("fig_2.jpeg", units = "in", width=6, height=4, res=600)
+print(fig_2)
+dev.off()
+```
+
+```{r}
+##buildings that regularly flushed
+MI12<- with_cl %>%
+  filter(building_id == "MI-1" | building_id == "MI-2")
+MI1<- with_cl %>%
+  filter(building_id == "MI-1")
+median(MI1$cl_tot_mgl)
+
+otherbldgs_monofd<- with_cl %>%
+  filter(building_id != "MI-1") %>%
+  filter(disinfectant != "free_chlorine") %>%
+  filter(condition== "first_draw")
+median(otherbldgs_monofd$cl_tot_mgl)
+
+MI2<- with_cl %>%
+  filter(building_id == "MI-2")
+median(MI2$cl_tot_mgl)
+```
+
+```{r}
+##pH results 
+#median for all results
+median(with_ph$pH)
+##mono cl pH
+ph_mono<- with_ph %>%
+  filter(disinfectant == "chloramines")
+median(ph_mono$pH)
+##free cl pH
+ph_free<- with_ph %>%
+  filter(disinfectant == "free_chlorine")
+median(ph_free$pH)
+
+##pH and culture-positivity
+ph_Lppos<- with_ph %>%
+  filter(legiolert_mpn100ml>0.5)
+median(ph_Lppos$pH)
+
+min(ph_Lppos$pH)
+max(ph_Lppos$pH)
+
+ph_Lpneg<- with_ph %>%
+  filter(legiolert_mpn100ml==0.5)
+median(ph_Lpneg$pH)
+
+phfree_Lppos<-  with_ph %>%
+  filter(disinfectant == "free_chlorine") %>%
+  filter(legiolert_mpn100ml>0.5)
+median(phfree_Lppos$pH)
+
+phfree_Lpneg<-  with_ph %>%
+  filter(disinfectant == "free_chlorine") %>%
+  filter(legiolert_mpn100ml==0.5)
+median(phfree_Lpneg$pH)
+
+ph_flush <- with_ph %>%
+  filter(condition == "flushed") %>%
+  select(cl_tot_mgl,disinfectant, site_id, building_id, sample_id)
+
+ph_fd_mono <- with_ph %>%
+  filter(condition == "first_draw") %>%
+  filter(disinfectant== "chloramines") %>%
+  mutate(cl_fdd= cl_tot_mgl) %>%
+    select(cl_fdd,disinfectant, site_id, building_id, sample_id, pH)
+median(ph_fd_mono$pH)
+
+ph_flush_mono <- with_ph %>%
+  filter(condition == "flushed") %>%
+  filter(disinfectant== "chloramines")  %>%
+  mutate(cl_flushed= cl_tot_mgl) %>%
+    select(cl_flushed,disinfectant, site_id, building_id, sample_id, pH)
+median(ph_flush_mono$pH)
+ph_fd_free <- with_ph %>%
+  filter(condition == "first_draw") %>%
+  filter(disinfectant== "free_chlorine") %>%
+  mutate(cl_fdd= cl_tot_mgl) %>%
+    select(cl_fdd,disinfectant, site_id, building_id, sample_id, pH)
+median(ph_fd_free$pH)
+ph_flush_free <- with_ph %>%
+  filter(condition == "flushed") %>%
+  filter(disinfectant== "free_chlorine")  %>%
+  mutate(cl_flushed= cl_tot_mgl) %>%
+    select(cl_flushed,disinfectant, site_id, building_id, sample_id, pH)
+median(ph_flush_free$pH)
+ph_fd <- with_ph %>%
+  filter(condition == "first_draw")
+```
+
+
+```{r}
+## temperature 
+##median temp of all samples
+median(with_temp$temp_c)
+
+##monocl samples with temperature measurements
+temp_mono<- with_temp %>%
+  filter(disinfectant == "chloramines")
+median(temp_mono$temp_c)
+
+##free cl samples with temperature measurements
+temp_free<- with_temp %>%
+  filter(disinfectant == "free_chlorine")
+median(temp_free$temp_c)
+
+##culture-positive samples with temp measurements
+temp_Lppos<- with_temp %>%
+  filter(legiolert_mpn100ml>0.5)
+median(temp_Lppos$temp_c)
+
+##culture-negative samples with temp measurements
+temp_Lpneg<- with_temp %>%
+  filter(legiolert_mpn100ml==0.5)
+median(temp_Lpneg$temp_c)
+
+min(temp_Lpneg$temp_c)
+max(temp_Lpneg$temp_c)
+
+##culture-negative samples in growth range for Lp
+temp_Lpneg_growthrange<- temp_Lpneg %>%
+  filter(temp_c>=20 & temp_c<=45)
+
+##fd samples with temp measurements
+temp_fd<- with_temp %>%
+  filter(condition== "first_draw")
+median(temp_fd$temp_c)
+
+##flush samples with temp measurements
+temp_flush<- with_temp %>%
+  filter(condition== "flushed")
+median(temp_flush$temp_c)
+
+
+#cold FD and flushed samples
+cold_fd<- with_temp %>%
+  filter(condition== "first_draw" & tap_temp== "cold")
+median(cold_fd$temp_c)
+
+#count of fd cold below 20C
+cold_flush_20 <- cold_fd %>% filter(temp_c <20)
+
+cold_flush<- with_temp %>%
+  filter(condition== "flushed" & tap_temp== "cold")
+median(cold_flush$temp_c)
+temp_cold<- with_temp %>%
+  filter(tap_temp== "cold")
+
+##hot tap samples
+temp_hot <- with_temp %>%
+  filter(tap_temp== "hot")
+
+##culture-positive hot tap samples
+temp_hot_pos <- temp_hot %>%
+  filter(legiolert_mpn100ml>0.5)
+median(temp_hot_pos$temp_c)
+min(temp_hot_pos$temp_c)
+max(temp_hot_pos$temp_c)
+
+##culture-negative hot temp samples
+temp_hot_neg <- temp_hot %>%
+  filter(legiolert_mpn100ml==0.5)
+
+#hot tap FD and flush samples
+hot_fd<- with_temp %>%
+  filter(condition== "first_draw" & tap_temp== "hot")
+median(hot_fd$temp_c)
+
+hot_fd_50 <- hot_fd %>% filter(temp_c >50)
+hot_flush<- with_temp %>%
+  filter(condition== "flushed" & tap_temp== "hot")
+median(hot_flush$temp_c)
+
+#mixed
+temp_mixed<- with_temp %>%
+  filter(tap_temp== "mixed")
+
+mixed_fd<- temp_mixed %>%
+  filter(condition== "first_draw")
+median(mixed_fd$temp_c)
+
+mixed_flush<- temp_mixed %>%
+  filter(condition== "flushed")
+median(mixed_flush$temp_c)
+
+#mix and hot first draw
+mixed_hot_fd<- with_temp %>%
+  filter(condition== "first_draw") %>%  filter(tap_temp== "mixed" | tap_temp== "hot")
+median(mixed_hot_fd$temp_c)
+length(mixed_hot_fd$temp_c)
+
+##culture-positive mixed tap samples
+temp_mix_pos <- temp_mixed %>%
+  filter(legiolert_mpn100ml>0.5)
+median(temp_mix_pos$temp_c)
+min(temp_mix_pos$temp_c)
+max(temp_mix_pos$temp_c)
+
+##high concentrations of Lp sample temps
+temp_highlp<- temp_Lppos %>%
+  mutate(mpn_l= legiolert_mpn100ml*10) %>%
+  filter(mpn_l>1000)
+
+###with qPCR/ddPCR
+temp_qpcr<- with_temp %>%
+  filter(!is.na(gc_L))
+
+temp_qpcr_pos<- temp_qpcr %>%
+  filter(BLoD>0)
+min(temp_qpcr_pos$temp_c)
+max(temp_qpcr_pos$temp_c)
+
+temp_qpcr_neg<- temp_qpcr %>%
+  filter(BLoD==0) 
+min(temp_qpcr_neg$temp_c)
+max(temp_qpcr_neg$temp_c)
+
+boxplot.stats(temp_qpcr_pos$temp_c)
+boxplot.stats(temp_qpcr_neg$temp_c)
+median(cold_fd$pH)
+median(cold_flush$pH)
+median(mixed_fd$pH)
+median(mixed_flush$pH)
+hot_flush1<- hot_flush %>%
+  filter(!is.na(pH))
+median(hot_fd$pH)
+median(hot_flush1$pH)
+```
+
+```{r}
+## DO 
+median(with_DO$do_mgl)
+free_do<- with_DO %>%
+  filter(disinfectant== "free_chlorine")
+median(free_do$do_mgl)
+mono_do<- with_DO %>%
+  filter(disinfectant== "chloramines")
+median(mono_do$do_mgl)
+
+#Lp positive DO
+do_Lppos<- with_DO %>%
+  filter(legiolert_mpn100ml>0.5)
+median(do_Lppos$do_mgl)
+
+do_Lpneg<- with_DO %>%
+  filter(legiolert_mpn100ml==0.5)
+median(do_Lpneg$do_mgl)
+```
+
+```{r}
+## conductivity
+median(with_cond$`cond_uS-cm2`)
+
+free_cond<- with_cond %>%
+  filter(disinfectant== "free_chlorine")
+median(free_cond$`cond_uS-cm2`)
+  
+mono_cond<- with_cond %>%
+  filter(disinfectant== "chloramines")
+median(mono_cond$`cond_uS-cm2`)
+  
+#Lp positive cond
+cond_Lppos<- with_cond %>%
+  filter(legiolert_mpn100ml>0.5)
+median(cond_Lppos$`cond_uS-cm2`)
+
+cond_Lpneg<- with_cond %>%
+  filter(legiolert_mpn100ml==0.5)
+median(cond_Lpneg$`cond_uS-cm2`)
+
+az_cond<- with_cond %>%
+  filter(site_id=="AZ")
+median(az_cond$`cond_uS-cm2`)
+```
+
+```{r}
+## do Legiolert and qPCR agree?
+qpcr_quant_legpos<- qPCR_ddpcr %>%
+  filter(BLoD >1) %>%
+  filter(legiolert_mpn100ml>0.5) %>%
+  filter(legiolert_mpn100ml<3000)
+
+#pos-neg agreement
+gc_mpn<- qPCR_ddpcr %>%
+  select(site_id, building_id, gc_L,legiolert_mpn100ml, BLoD, sample_id, disinfectant) %>%
+  mutate(mpn_l= legiolert_mpn100ml*10) %>%
+  mutate(logmpn= log10(mpn_l)) %>%
+  mutate(loggc= log10(gc_L)) %>%
+  mutate(diff= loggc-logmpn) %>%
+  mutate(mpn_pos= ifelse(mpn_l>5, "pos", "neg")) %>%
+  mutate(gc_pos= ifelse(BLoD>0, "pos", "neg")) %>%
+  mutate(agree= ifelse(mpn_pos== gc_pos, "True", "False"))
+
+gc_mpn_sum<- gc_mpn %>%
+  dplyr::group_by(agree) %>%
+  dplyr::summarise(n=n())
+
+#samples by disinfectant
+gc_mpn_dis <- gc_mpn %>%
+  dplyr::group_by(disinfectant) %>%
+  dplyr::summarise(n=n())
+
+## Samples that agree in terms of positivity
+agree<- gc_mpn %>%
+  filter(agree== "True")
+
+##Agree in terms of positivty and POSITIVE (BLOD>0)
+agree_pos<- agree %>%
+  filter(gc_pos== "pos")
+
+agree_neg<- agree %>%
+  filter(gc_pos== "neg")
+
+#Disagree in terms of positivty
+disagree<- gc_mpn %>%
+  filter(agree=="False")
+disagree_sum<- disagree %>%
+  dplyr::group_by(gc_pos, mpn_pos) %>%
+  dplyr::summarise(n=n())
+
+#positive only by qPCR/ddPCR
+pos_qpcronly<- disagree %>%
+  filter(gc_pos=="pos")
+
+#positive only by Legiolert
+pos_legonly<- disagree %>%
+  filter(mpn_pos=="pos")
+median(pos_legonly$legiolert_mpn100ml)
+
+agree_difsum<- agree_pos %>%
+  mutate(diff= gc_L - mpn_l) %>%
+  mutate(posdif= ifelse(diff>0, "pos", "neg")) %>%
+  mutate(gcdifmpn= gc_L/mpn_l) %>%
+  #group_by(posdif) %>%
+  dplyr::summarise(avgdif= mean(diff), med_dif= median(diff), n=n(), avg_times= mean(gcdifmpn))
+
+gc_mpn1<- gc_mpn  %>%
+  filter(diff<0) %>%
+  mutate(perdif= diff/gc_L*100) %>%
+  mutate(logdif= log(gc_L)-log(mpn_l))
+mean(gc_mpn1$diff)
+median(gc_mpn1$diff)
+median(gc_mpn1$logdif)
+
+##log difference in samples that agree
+ gc_mpn_agree<- gc_mpn %>%
+   filter(agree=="True") %>%
+   mutate(diff_pos= ifelse(diff>0, "pos", "neg"))
+ median(gc_mpn_agree$diff)
+ 
+##samples that are positive and quantifiable by both methods
+ gc_mpn_quanti<- gc_mpn_agree %>%
+   filter(legiolert_mpn100ml<3000) %>%
+   filter(BLoD==2)
+  median(gc_mpn_quanti$diff)
+ 
+#higher conc with legiolert than qPCR
+ gc_mpn_negdiff<- gc_mpn %>%
+   filter(diff<0)
+ median(gc_mpn_negdiff$diff)
+
+```
+
+```{r}
+##Figure 3A - L. pneumophila MPN/L v. log(gene copies/L)
+fig_3a<- df %>% 
+  filter(gc_L> 0) %>%
+  mutate(BLoD = as.character(BLoD)) %>%
+  ggplot(aes(x = log10(gc_L), y = log10(legiolert_mpn100ml*10))) +
+  geom_point(aes(shape= `BLoD`, color=disinfectant), na.rm = TRUE, size=2) + 
+  scale_shape_manual(values = c("0" =22, "1"=23, "2"=16), labels= c("<LOD", "LOD<&<LOQ", ">LOQ"))+
+  scale_y_continuous(limits = c(0,6), expand = c(0,0), breaks=c(0,1,2,3,4,5,6))+
+  scale_x_continuous(limits=c(0,7), expand = c(0,0), breaks=c(0,1,2,3,4,5,6,7))+
+  scale_color_viridis_d(begin = 0.3, end = 0.7, option = "A", labels=c("Free Chlorine", "Monochloramine"))+
+  labs(x= "Log(*L. pneumophila* (gc/L))", y= "Log(*L. pneumophila* (MPN/L))", shape="qPCR Result", color="Disinfectant")+
+  geom_hline(yintercept=log10(22726), linetype="dotted")+
+  geom_hline(yintercept=log10(10), linetype="dashed")+
+  geom_abline(intercept = 0, slope = 1, linetype="solid", color="#231151FF")+
+  theme_classic(base_size=12)+
+    theme(legend.position=c(0.28,0.9),
+          legend.box = "horizontal",
+          legend.key.size = unit(0.4, "cm"),
+          legend.text = element_text(color="black", size=7),
+          legend.title = element_text(color="black", size=7),
+          axis.title.y =ggtext::element_markdown(size=8, face="bold", color="black"), 
+          axis.title.x =ggtext::element_markdown(size=8, face="bold", color="black"), 
+          axis.text.x = element_text(color="black", size=8),
+          axis.text.y = element_text(color="black", size=8))+
+  geom_text(aes(x=5, y=5),label="1:1", angle=45, vjust=-0.5,hjust=1)
+
+fig_3a
+jpeg("fig_3a.jpeg", units = "in", width=6, height=4, res=300)
+print(fig_3a)
+dev.off()
+```
+
+```{r}
+##Figure 3B - L. pneumophila MPN/L v. log(gene copies/L) - positive and quantifiable samples only
+library(ggpubr)
+lm<- lm(gc_mpn_quanti$logmpn~gc_mpn_quanti$loggc)
+
+fig_3b<- gc_mpn_quanti %>% 
+  mutate(building_id = as.character(building_id)) %>%
+  ggplot(aes(x = loggc, y = logmpn)) +
+  geom_point(aes(fill= building_id), color="black", shape=21, size=2) + 
+  #scale_y_log10(breaks = c(1, 1E1, 1E2, 1E3,1E4, 1E5, 1E6), limits = c(1, 1E6), expand=c(0,0))+
+  #scale_x_log10(breaks = c(1, 10, 100, 1E3,1E4, 1E5, 1E6, 1E7, 1E8), limits = c(1, 1E8), expand=c(0,0))+
+  scale_y_continuous(limits = c(0,6), breaks = c(0,1,2,3,4,5,6), expand = c(0,0))+
+  scale_x_continuous(limits = c(0,7), breaks = c(0,1,2,3,4,5,6,7), expand = c(0,0))+
+  scale_fill_viridis_d(begin = 0.25, end = 0.93, option = "D")+
+  labs(x= "Log(*L. pneumophila* (gc/L))", y= "Log(*L. pneumophila* (MPN/L))", fill= "Building ID")+
+ # geom_hline(yintercept=22726, linetype="dotted")+
+ # geom_hline(yintercept=10, linetype="dashed")+
+  theme_classic(base_size=12)+
+  theme(legend.position=c(0.1, 0.9),
+         legend.key.size = unit(0.4, "cm"),
+        legend.text = element_text(color="black", size=7),
+        legend.title = element_text(color="black", size=7),
+        axis.title.y = ggtext::element_markdown(size=8, face="bold", color="black"), 
+        axis.title.x = ggtext::element_markdown(size=8, face="bold", color="black"), 
+        axis.text.x = element_text(color="black", size=8),
+        axis.text.y = element_text(color="black", size=8))+
+    geom_smooth(method = "lm", se=F)+
+  stat_regline_equation(label.y=3.8 , label.x= 5.1, aes(label = ..eq.label..), size=2.5) +
+  stat_regline_equation(label.y=3.6 , label.x= 5.1, aes(label = ..rr.label..), size=2.5)+
+  geom_hline(yintercept=log10(22726), linetype="dotted")+
+  geom_hline(yintercept=log10(10), linetype="dashed")
+  
+fig_3b
+jpeg("fig_3b.jpeg", units = "in", width=6, height=4, res=300)
+print(fig_3b)
+dev.off()
+```
+
+
+```{r}
+fig_3<- ggarrange(fig_3a,fig_3b, ncol = 2, nrow=1, align = "hv", labels = c("A", "B"), font.label = list(size = 10))
+fig_3
+jpeg("fig_3", units = "in", width=9, height=4, res=300)
+print(fig_3)
+dev.off()
+```
+
+```{r}
+##qPCR & legiolert agreement of pos/neg
+agreed<- df %>% 
+  filter(is.na(gc_L)==FALSE) %>%
+  mutate(`pos_neglegio` = ifelse(`legiolert_mpn100ml` == 0.5, "negative","positive")) %>%
+  mutate(pos_negqpcr= ifelse(BLoD == 0, "negative","positive")) %>%
+  mutate(`agree`= ifelse(pos_neglegio == pos_negqpcr, "TRUE", "FALSE")) %>%
+  dplyr::group_by(`agree`) %>%
+  dplyr::summarise(n=n())
+```
+
+```{r}
+#correlation between PCR and legiolert
+#cor.test(df$gc_L, df$legiolert_mpn100ml, method=c("pearson")) #not significantly correlated
+#cor.test(df$gc_L, df$legiolert_mpn100ml, method=c( "spearman")) #can't handle ties
+##all samples analyzed using both methods
+cor.test(qPCR_ddpcr$gc_L, qPCR_ddpcr$legiolert_mpn100ml, method=c("kendall")) #slight negative significant correlation
+
+##pos and quantifiable data only
+cor.test(gc_mpn_quanti$gc_L, gc_mpn_quanti$legiolert_mpn100ml, method=c("kendall"))
+```
+
+```{r}
+## Figure S7 - L. pneumophila gc/L v. Chlorine 
+fig_s7<- with_cl %>%
+  mutate(disinfectant=factor(disinfectant, order = TRUE, levels =c("free_chlorine", "chloramines", "none"))) %>%
+  mutate(BLoD=factor(BLoD, order = TRUE, levels =c("0", "1", "2"))) %>%
+  filter(!is.na(BLoD)) %>%
+  ggplot(aes(x = cl_tot_mgl, y = gc_L)) +
+  geom_point(size=3, aes(shape= BLoD, color=site_id.y), stroke=0.7) +
+  scale_y_log10(breaks = c(1, 1E1, 1E2, 1E3,1E4, 1E5, 1E6,1E7), limits = c(4, 1E7), expand=c(0,0),  labels =    trans_format("log10", math_format(10^.x)))+
+  scale_shape_manual(values = c("0"=22, "1"=23, "2"=19), labels=c("<LOD", ">LOD & <LOQ",">LOQ"))+
+  scale_x_continuous(breaks= c(0, 0.5, 1, 1.5,  2, 2.5, 3), limits=c(0,3))+
+  scale_color_viridis_d(begin = 0, end = 0.95, name= "Site", alpha=0.8, option = "H")+
+  labs(x="Chlorine Residual (mg/L Cl2)", y= "*L. pneumophila* (gc/L)") + 
+  guides(color=guide_legend(nrow=4))+
+  theme_classic(base_size=12)+
+  theme(
+        legend.position = "right",
+        legend.title = element_blank(),
+        axis.title.y =ggtext::element_markdown(size=8, face="bold", color="black"), 
+        axis.title.x = element_text(color="black", size=8, face="bold"),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"))
+
+fig_s7
+png("fig_s7.png", units = "in", width=6, height=4, res=400)
+print(fig_s7)
+dev.off()
+```
+
+
+```{r}
+## Figure S9 - L. pneumophila gc/L v. temp
+fig_s9<- with_temp %>%
+  mutate(disinfectant=factor(disinfectant, order = TRUE, levels =c("free_chlorine", "chloramines", "none"))) %>%
+  mutate(BLoD=factor(BLoD, order = TRUE, levels =c("0", "1", "2"))) %>%
+  filter(!is.na(BLoD)) %>%
+  ggplot(aes(x = temp_c, y = gc_L)) +
+  geom_point(size=3, aes(shape= BLoD, color=site_id), stroke=0.7) +
+  scale_y_log10(breaks = c(1, 1E1, 1E2, 1E3,1E4, 1E5, 1E6,1E7), limits = c(4, 1E7), expand=c(0,0),  labels =    trans_format("log10", math_format(10^.x)))+
+  scale_shape_manual(values = c("0"=22, "1"=23, "2"=19), labels=c("<LOD", ">LOD & <LOQ",">LOQ"))+
+  #scale_x_continuous(breaks= c(0, 0.5, 1, 1.5,  2, 2.5, 3), limits=c(0,3))+
+  scale_color_viridis_d(begin = 0, end = 0.9, name= "Site", alpha=0.8, option = "H")+
+  labs(x="Temperature (C)", y= "*L. pneumophila* (gc/L)") + 
+  guides(color=guide_legend(nrow=4))+
+  theme_classic(base_size=12)+
+  theme(#legend.position = c(.7, .6),
+        legend.position = "right",
+        legend.title = element_blank(),
+        #legend.box = "horizontal",
+       # legend.direction = "vertical",
+        #legend.background = element_rect(linetype = 1, size = 0.5, colour = 1)
+        axis.title.y =ggtext::element_markdown(size=8, face="bold", color="black"), 
+        axis.title.x = element_text(color="black", size=8, face="bold"),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"))
+
+fig_s9
+png("fig_s9.png", units = "in", width=6, height=4, res=400)
+print(fig_s9)
+dev.off()
+```
+```{r}
+## Figure S10 - L. pneumophila gc/L v. pH
+fig_s10<- with_ph %>%
+  mutate(disinfectant=factor(disinfectant, order = TRUE, levels =c("free_chlorine", "chloramines", "none"))) %>%
+  mutate(BLoD=factor(BLoD, order = TRUE, levels =c("0", "1", "2"))) %>%
+  filter(!is.na(BLoD)) %>%
+  ggplot(aes(x = pH, y = gc_L)) +
+  geom_point(size=3, aes(shape= BLoD, color=site_id.y), stroke=0.7) +
+  scale_y_log10(breaks = c(1, 1E1, 1E2, 1E3,1E4, 1E5, 1E6,1E7), limits = c(4, 1E7), expand=c(0,0),  labels =    trans_format("log10", math_format(10^.x)))+
+  scale_shape_manual(values = c("0"=22, "1"=23, "2"=19), labels=c("<LOD", ">LOD & <LOQ",">LOQ"))+
+  #scale_x_continuous(breaks= c(0, 0.5, 1, 1.5,  2, 2.5, 3), limits=c(0,3))+
+  scale_color_viridis_d(begin = 0, end = 0.95, name= "Site", alpha=0.8, option = "H")+
+  labs(x="pH", y= "*L. pneumophila* (gc/L)") + 
+  guides(color=guide_legend(nrow=4))+
+  theme_classic(base_size=12)+
+  theme(#legend.position = c(.7, .6),
+        legend.position = "right",
+        legend.title = element_blank(),
+        #legend.box = "horizontal",
+       # legend.direction = "vertical",
+        #legend.background = element_rect(linetype = 1, size = 0.5, colour = 1)
+        axis.title.y =ggtext::element_markdown(size=8, face="bold", color="black"), 
+        axis.title.x = element_text(color="black", size=8, face="bold"),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"))
+
+fig_s10
+png("fig_s10.png", units = "in", width=6, height=4, res=400)
+print(fig_s10)
+dev.off()
+```
+
+
+```{r}
+## Figure S11 - L. pneumophila MPN/L v. dissolved oxygen
+
+fig_s11<- with_DO %>%
+  ggplot(aes(x = do_mgl, y = legiolert_mpn100ml*10, fill=site_id.y)) +
+  geom_point(size=3, aes(shape= tap_temp)) +
+  geom_hline(yintercept=10, linetype="dashed")+
+  scale_y_log10(breaks = c(1, 1E1, 1E2, 1E3,1E4, 1E5), limits = c(4, 1E5), expand=c(0,0),  labels = trans_format("log10", math_format(10^.x)))+
+  scale_shape_manual(values=c(21,22,23), labels=c("Cold", "Hot", "Mixed"), name= "Outlet Temp")+
+  #scale_x_continuous(breaks= c(0, 0.5, 1, 1.5,  2, 2.5, 3), limits=c(0,3))+
+  scale_fill_viridis_d(begin = 0, end = 0.8, name= "Site", alpha=0.7, option = "H")+
+  labs(x="Dissolved Oxygen (mg/L)", y= "*L. pneumophila* (MPN/L)") + 
+   guides(fill=guide_legend(override.aes=list(shape=21)))+
+  theme_classic(base_size=12)+
+  theme(legend.position = "right",
+        legend.title = element_blank(),
+       # legend.box = "horizontal",
+       # legend.direction = "horizontal",
+        axis.title.y =ggtext::element_markdown(size=8, face="bold", color="black"), 
+        axis.title.x = element_text(color="black", size=8, face="bold"),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"))
+        #legend.background = element_rect(linetype = 1, size = 0.5, colour = 1))
+
+fig_s11
+jpeg("fig_s11.jpeg", units = "in", width=6, height=4, res=300)
+print(fig_s11)
+dev.off()
+```
+
+```{r}
+## Figure S12 - L. pneumophila MPNL v. conductivity
+
+fig_s12<- with_cond %>%
+  ggplot(aes(x = `cond_uS-cm2`, y = legiolert_mpn100ml*10, fill=site_id.y)) +
+  geom_point(size=3, aes(shape= tap_temp)) +
+  geom_hline(yintercept=10, linetype="dashed")+
+  scale_y_log10(breaks = c(1, 1E1, 1E2, 1E3,1E4, 1E5), limits = c(4, 1E5), expand=c(0,0),  labels = trans_format("log10", math_format(10^.x)))+
+  scale_shape_manual(values=c(21,22,23), labels=c("Cold", "Hot", "Mixed"), name= "Outlet Temp")+
+  scale_x_continuous(limits=c(90,1550))+
+  scale_fill_viridis_d(begin = 0, end = 0.8, name= "Site", alpha=0.7, option = "H")+
+  labs(x="Conductivity (uS/cm)", y= "*L. pneumophila* (MPN/L)") + 
+   guides(fill=guide_legend(override.aes=list(shape=21)))+
+  theme_classic(base_size=12)+
+  theme(legend.position = "top",
+        legend.title = element_blank(),
+       # legend.box = "horizontal",
+       # legend.direction = "horizontal",
+        axis.title.y =ggtext::element_markdown(size=8, face="bold", color="black"), 
+        axis.title.x = element_text(color="black", size=8, face="bold"),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"))
+        #legend.background = element_rect(linetype = 1, size = 0.5, colour = 1))
+
+fig_s12
+jpeg("fig_s12.jpeg", units = "in", width=6, height=4, res=300)
+print(fig_s12)
+dev.off()
+```
+
+```{r}
+### results by fixture 
+##culture positivity by fixture 
+faucet_posneg<- faucet %>%
+  dplyr::group_by(tap_temp,pos_neg) %>%
+  dplyr::summarise(n=n()) 
+shower_posneg<- showers %>%
+  dplyr::group_by(tap_temp,pos_neg) %>%
+  dplyr::summarise(n=n())
+
+##showers qPCR/ddPCR positive and neg
+shower_gcpos<- showers %>%
+  filter(!is.na(gc_L)) %>%
+  mutate(gc_posneg= ifelse(BLoD>=1, "positive", "negative")) %>%
+  dplyr:: group_by(gc_posneg) %>%
+  dplyr::summarize(n=n(), median=median(gc_L))
+##faucets qPCR/ddPCR positive and neg
+faucet_gcpos<- faucet %>%
+  filter(!is.na(gc_L)) %>%
+  mutate(gc_posneg= ifelse(BLoD>=1, "positive", "negative")) %>%
+  dplyr:: group_by(gc_posneg) %>%
+  dplyr::summarize(n=n(), median=median(gc_L))
+##faucets hot/mixed positive and neg
+faucet_notcold_gcpos<- faucet_notcold %>%
+  filter(!is.na(gc_L)) %>%
+  mutate(gc_posneg= ifelse(BLoD>=1, "positive", "negative")) %>%
+  dplyr:: group_by(gc_posneg) %>%
+  dplyr::summarize(n=n(), median=median(gc_L))
+showers_poslegresults<- showers %>%
+  filter(legiolert_mpn100ml>0.5)
+median(showers_poslegresults$legiolert_mpn100ml)
+  
+##showers hot/mixed positive and neg
+shower_Legpos<-showers %>%
+   mutate(leg_posneg= ifelse(legiolert_mpn100ml==0.5, "negative", "positive")) %>%
+  dplyr:: group_by(leg_posneg) %>%
+  dplyr::summarize(n=n(), median=median(legiolert_mpn100ml*10))
+faucet_Legpos<- faucet %>%
+  mutate(leg_posneg= ifelse(legiolert_mpn100ml==0.5, "negative", "positive"))%>%
+  dplyr:: group_by(leg_posneg) %>%
+  dplyr::summarize(n=n(), median=median(legiolert_mpn100ml*10))
+##positive faucets
+faucet_poslegresults<- faucet %>%
+   filter(legiolert_mpn100ml>0.5)
+median(faucet_poslegresults$legiolert_mpn100ml)
+faucet_notcold_Legpos<- faucet_notcold %>%
+  mutate(leg_posneg= ifelse(legiolert_mpn100ml==0.5, "negative", "positive")) %>%
+  dplyr:: group_by(leg_posneg) %>%
+  dplyr::summarize(n=n(), median=median(legiolert_mpn100ml*10))
+##electronic faucet
+electronic<- df %>%
+  filter(tap_type == "faucet_electronic")
+electronic_lppos<- electronic %>%
+  filter(legiolert_mpn100ml>0.5)
+electronic_gcpos<- electronic %>%
+  filter(!is.na(gc_L)) %>%
+  mutate(gc_posneg= ifelse(BLoD>=1, "positive", "negative")) %>%
+  dplyr:: group_by(gc_posneg) %>%
+  dplyr::summarize(n=n(), median=median(gc_L))
+
+
+bothfix_qpcr<- df %>%
+  filter(tap_type == "faucet" | tap_type == "shower") %>%
+  filter(!is.na(gc_L)) %>%
+  select(-legiolert_mpn100ml) %>%
+  group_by(`building_id`, `tap_type`) %>%
+  dplyr::summarize(n=n())
+electronic<- df %>%
+  filter(tap_type == "faucet_electronic")
+```
+
+```{r}
+##paired comparison of FD and flushed
+#filtering to only outlets where multiple samples were collected
+df_paired<- df %>%
+  mutate(unique=paste(sample_loc,tap_temp,condition, sep = "_")) %>%
+  mutate(samp_temp= paste(sample_loc,tap_temp, sep = "_")) %>%
+  dplyr::group_by(samp_temp) %>%
+  dplyr::summarize(sample_loc, samp_temp, building_id, disinfectant, cl_tot_mgl, condition, gc_L, legiolert_mpn100ml, flushtime_min, BLoD, tap_temp, temp_c, pH, n=n()) %>%
+  filter(n>1) %>%
+  mutate(gc_posneg= ifelse(BLoD>=1, "positive", "negative")) %>%
+  mutate(leg_posneg= ifelse(legiolert_mpn100ml==0.5, "negative", "positive"))
+
+#df with just fd from pairs
+df_paired_fd<- df_paired %>%
+  filter(condition== "first_draw")
+#df with just flushed from pairs
+df_paired_flush<- df_paired %>%
+  filter(condition== "flushed") %>%
+  rename_with(toupper)
+## creating single df with paired and fd together in rows
+paired_dif<- cbind(df_paired_fd, df_paired_flush) %>%
+  mutate(check= ifelse(samp_temp== SAMP_TEMP, "match", "error")) %>% #checking rows matched up correctly
+  mutate(leg_dif_L= (legiolert_mpn100ml*10 - LEGIOLERT_MPN100ML*10)) %>%
+  mutate(gc_dif= gc_L - GC_L) %>%
+  mutate(leg_comp= ifelse(leg_posneg==LEG_POSNEG,"same","different")) %>%
+  mutate(gc_comp= ifelse(gc_posneg==GC_POSNEG,"same","different"))
+#count of outlets with multiple samples by building
+df_pair_bldg<- df_paired %>%
+  dplyr::group_by(building_id) %>%
+   dplyr::summarize(n=n())
+#df of outlet names with multiple samples 
+df_pairs<- df_paired %>%
+distinct(samp_temp)
+
+##fd and flushed summary stats 
+median(df_paired_flush$FLUSHTIME_MIN)
+min(df_paired_flush$FLUSHTIME_MIN)
+max(df_paired_flush$FLUSHTIME_MIN)
+
+##paired samples that agree
+##negative by both methods
+paired_bothneg_gc<- paired_dif %>%
+  filter(gc_comp== "same") %>%
+  filter(gc_posneg=="negative")
+
+paired_bothneg_leg<- paired_dif %>%
+  filter(leg_comp== "same") %>%
+  filter(leg_posneg=="negative")
+
+##positive by both methods
+paired_bothpos_gc<- paired_dif %>%
+  filter(gc_comp== "same") %>%
+  filter(gc_posneg=="positive")
+median(paired_bothpos_gc$leg_dif_L)
+
+paired_bothpos_leg<- paired_dif %>%
+  filter(leg_comp== "same") %>%
+  filter(leg_posneg=="positive")
+median(paired_bothpos_leg$leg_dif_L)
+min(paired_bothpos_leg$leg_dif_L)
+
+#taps where FD and flushed disagree by qPCR/ddPCR
+paired_disagree_gc<- paired_dif %>%
+  filter(gc_comp== "different") 
+
+#flush caused tap to go from neg to positive
+paired_disagree_gc_negtopos<- paired_disagree_gc %>%
+  filter(gc_posneg== "negative")
+
+#flush caused tap to become neg
+paired_disagree_gc_postoneg<- paired_disagree_gc %>%
+  filter(gc_posneg== "positive") 
+
+#taps where FD and flushed disagree by legiolert
+paired_disagree_leg<- paired_dif %>%
+  filter(leg_comp== "different") 
+
+#flush caused tap to go from neg to positive
+paired_disagree_leg_negtopos<- paired_disagree_leg %>%
+  filter(leg_posneg== "negative")
+
+#flush caused tap to become neg
+paired_disagree_leg_postoneg<- paired_disagree_leg %>%
+  filter(leg_posneg== "positive") 
+
+##paired temp differences
+paired_dif_temp<- paired_dif %>%
+    filter(!is.na(temp_c)) 
+wilcox.test(paired_dif_temp$temp_c, paired_dif_temp$TEMP_C, paired = T )
+
+##paired temp change cold only 
+paired_dif_temp_cold<- paired_dif_temp %>%
+  filter(tap_temp == "cold")
+median(paired_dif_temp_cold$temp_c) ##fd median temp
+median(paired_dif_temp_cold$TEMP_C) ##flushed median temp
+wilcox.test(paired_dif_temp_cold$temp_c, paired_dif_temp_cold$TEMP_C, paired=T)
+
+##hot fd v. flushed
+paired_dif_temp_hot<- paired_dif_temp %>%
+  filter(tap_temp == "hot")
+median(paired_dif_temp_hot$temp_c) ##fd median temp
+median(paired_dif_temp_hot$TEMP_C) ##flushed median temp
+wilcox.test(paired_dif_temp_hot$temp_c, paired_dif_temp_hot$TEMP_C, paired=T)
+
+#mixed
+paired_dif_temp_mix<- paired_dif_temp %>%
+  filter(tap_temp == "mixed")
+median(paired_dif_temp_mix$temp_c) ##fd median temp
+median(paired_dif_temp_mix$TEMP_C) ##flushed median temp
+wilcox.test(paired_dif_temp_mix$temp_c, paired_dif_temp_mix$TEMP_C)
+## paired cl fd v. flushed
+df_paired_fdcl<- df_paired %>%
+  filter(condition == "first_draw") %>%
+    filter(!is.na(cl_tot_mgl)) %>%
+    filter(cl_tot_mgl != 0) 
+df_paired_flushcl<- df_paired %>%
+  filter(condition == "flushed") %>%
+    filter(!is.na(cl_tot_mgl)) %>%
+    filter(cl_tot_mgl != 0)%>%
+    filter(sample_loc != "S-A1")
+
+##Culture positive samples paired data frame
+paired_poslp<- paired_dif %>%
+  filter(leg_posneg== "positive" & leg_comp== "same")
+wilcox.test(paired_poslp$legiolert_mpn100ml, paired_poslp$LEGIOLERT_MPN100ML, paired = T)
+median(paired_poslp$leg_dif_L)
+min(paired_poslp$leg_dif_L)
+max(paired_poslp$leg_dif_L)
+
+### paired positive samples using qPCR/ddPCR results
+paired_posgc<- paired_dif %>%
+  filter(gc_posneg== "positive" & gc_comp== "same")
+
+##paired flushed sample flush times
+df_paired_fs<- df_paired %>%
+  filter(condition == "flushed")
+median(df_paired_fs$flushtime_min)
+df_paired_dif<- cbind(df_paired_fd, df_paired_fs)
+
+##paired sample pH
+paired_pH<- paired_dif %>%
+  filter(!is.na(pH) & !is.na(PH)) %>%
+  mutate(phdif=PH-pH)
+wilcox.test(paired_pH$pH, paired_pH$PH, paired = T)
+```
+
+
+```{r}
+## Figure S8 - Temperature in FD and Flushed PAIRED Samples by Tap Temp
+
+temp_names<- c(`cold`= "Cold",`hot`=  "Hot",`mixed`= "Mixed")
+paired_temp<- df_paired %>%
+  filter(!is.na(temp_c)) %>%
+  filter(samp_temp!= "S-A1_cold")
+
+fig_s8<- paired_temp%>%
+  ggplot(aes(x= `condition`, y= `temp_c`))+
+geom_boxplot(aes(fill=condition),outlier.shape = NA)+
+  scale_fill_viridis_d(begin = 0.35, end = 0.8, option = "D", alpha=0.3,labels=c("First Draw", "Flushed"))+
+  ggnewscale::new_scale_fill()+
+  geom_point(aes(fill= sample_loc), shape=21, color="black", size=3.3, alpha=0.8)+
+  labs(x="Condition", y="Temperature (C)")+
+  scale_fill_manual(values=as.vector(polychrome(29)), guide="none")+
+  #guides(fill=guide_legend(override.aes=list(shape=21)))+
+  geom_line(aes(group=sample_loc), size=0.3, linetype="dotted")+
+  scale_x_discrete(labels=c("First-Draw","Flushed"))+
+  theme_classic(base_size=12)+
+  theme(legend.position = "right",
+        legend.title = element_blank(),
+        axis.title.y =element_text(size=8, face="bold", color="black"), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"))+
+  facet_wrap(~tap_temp, labeller = as_labeller(temp_names))
+
+fig_s8
+jpeg("fig_s8.jpeg", units = "in", width=6, height=4, res=300)
+print(fig_s8)
+dev.off()
+``` 
+
+```{r}
+## Figure S13 - Chlorine in FD and Flushed PAIRED Samples by Tap Temp
+
+dis_names<- c(`free_chlorine`= "Free Chlorine",`chloramines`=  "Monochloramine")
+
+fig_s13<- paired_temp%>%
+  ggplot(aes(x= `condition`, y= `cl_tot_mgl`))+
+geom_boxplot(aes(fill=condition),outlier.shape = NA)+
+  scale_fill_viridis_d(begin = 0.35, end = 0.8, option = "D", alpha=0.3,labels=c("First Draw", "Flushed"))+
+  ggnewscale::new_scale_fill()+
+  geom_jitter(aes(fill= sample_loc), shape=21, color="black", size=2, alpha=0.8, position=position_dodge(0.2))+
+  labs(x="Condition", y="Chlorine Residual (mg/L as Cl2)")+
+  scale_fill_manual(values=as.vector(polychrome(29)), guide="none")+
+  scale_x_discrete(labels=c("First-Draw","Flushed"))+
+  theme_classic(base_size=12)+
+  theme(legend.position = "right",
+        legend.title = element_blank(),
+        axis.title.y =element_text(size=8, face="bold", color="black"), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"))+
+  facet_wrap(~disinfectant, labeller = as_labeller(dis_names), scales = "free")
+
+fig_s13
+jpeg("fig_s13.jpeg", units = "in", width=6, height=4, res=300)
+print(fig_s13)
+dev.off()
+``` 
+
+
+```{r}
+## PAIRED FD v. Flushed figures FOR TEMP
+#library(ggnewscale)
+dis_names<- c(`free_chlorine`= "Free Chlorine",`chloramines`=  "Monochloramine")
+phpaired_new<- paired_temp%>%
+  ggplot(aes(x= `condition`, y= pH))+
+geom_boxplot(aes(fill=condition),outlier.shape = NA)+
+  scale_fill_viridis_d(begin = 0.35, end = 0.8, option = "D", alpha=0.3,labels=c("First Draw", "Flushed"))+
+  ggnewscale::new_scale_fill()+
+  geom_jitter(aes(fill= sample_loc), shape=21, color="black", size=2, alpha=0.8, position=position_dodge(0.2))+
+  labs(x="Condition", y="pH")+
+  scale_fill_manual(values=as.vector(polychrome(29)), guide="none")+
+  #guides(fill=guide_legend(override.aes=list(shape=21)))+
+  #geom_line(aes(group=sample_loc), size=0.25, linetype="dotted")+
+  scale_x_discrete(labels=c("First-Draw","Flushed"))+
+  theme_classic(base_size=12)+
+  theme(legend.position = "right",
+        legend.title = element_blank(),
+        axis.title.y =element_text(size=8, face="bold", color="black"), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"))+
+  facet_wrap(~disinfectant, labeller = as_labeller(dis_names), scales = "free")
+phpaired_new
+``` 
+
+
+```{r}
+## Figure S14 - L. pneumophila FD v. Flushed for PAIRED samples by building
+fig_s14<- df_paired %>%
+  ggplot(aes(x= `condition`, y= `legiolert_mpn100ml`*10))+
+geom_boxplot(aes(fill=condition),outlier.shape = NA)+
+  scale_fill_viridis_d(begin = 0.35, end = 0.8, option = "D", alpha=0.3, labels=c("First Draw", "Flushed"))+
+    ggnewscale::new_scale_fill()+
+  geom_point(aes(fill= building_id), shape=21, color="black", size=3.3, alpha=0.8)+ 
+  labs(x="Condition", y="*L. pneumophila* (MPN/L)")+
+  scale_x_discrete(labels=c("First-Draw","Flushed"))+
+ scale_y_log10(breaks = c(1E1,1E2, 1E3,1E4,1E5), limits = c(3, 1E5), expand=c(0,0),  labels = trans_format("log10", math_format(10^.x)))+
+  scale_fill_viridis_d(begin = 0, end = 0.9, name= "Site", alpha=0.8, option = "H")+
+  geom_line(aes(group=sample_loc), size=0.3, linetype="dotted")+
+  geom_hline(yintercept = 10, linetype="dashed")+
+   guides(fill=guide_legend(nrow = 6))+
+  theme_classic(base_size=12)+
+  theme(legend.position = "right",
+        legend.title = element_blank(),
+        axis.title.y =ggtext::element_markdown(size=8, face="bold", color="black"), 
+        axis.title.x = element_text(color="black", size=8, face="bold"),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"))
+
+fig_s14
+jpeg("fig_s14.jpeg", units = "in", width=6, height=4, res=300)
+print(fig_s14)
+dev.off()
+```
+
+```{r}
+## Figure S15 - L. pneumophila gene copies per liter for FD and Flushed PAIRED samples by building
+library(ggnewscale)
+
+fig_s15<- df_paired %>%
+  mutate(BLoD=factor(BLoD, order = TRUE, levels =c("0", "1", "2"))) %>%
+  filter(!is.na(BLoD)) %>%
+  ggplot(aes(x= `condition`, y= `gc_L`))+
+geom_boxplot(aes(fill=condition),outlier.shape = NA)+
+  scale_fill_viridis_d(begin = 0.35, end = 0.8, option = "D", alpha=0.3)+
+  ggnewscale::new_scale_fill()+
+  geom_point(aes(shape=BLoD, color= building_id), size=3.3, alpha=0.8,  position=position_dodge(0.3))+
+  scale_shape_manual(values = c("0"=22, "1"=23, "2"=19), labels=c("<LOD", ">LOD & <LOQ",">LOQ"))+
+  labs(x="Condition", y="*L. pneumophila* (gc/L)")+
+  scale_x_discrete(labels=c("First-Draw","Flushed"))+
+   scale_color_viridis_d(begin = 0.1, end = 0.9, name= "Site", alpha=0.8, option = "H")+
+  #geom_line(aes(group=sample_loc), size=0.3, linetype="dotted")+
+ scale_y_log10(breaks = c(1E2, 1E3,1E4, 1E5, 1E6, 1E7), limits = c(5E1, 1E7), expand=c(0,0),  labels =   trans_format("log10", math_format(10^.x)))+
+  guides(color=guide_legend(override.aes=list(shape=19)), color=guide_legend(nrow = 4))+
+  theme_classic(base_size=12)+
+  theme(legend.position = "right",
+        legend.title = element_blank(),
+        axis.title.y =ggtext::element_markdown(size=8, face="bold", color="black"), 
+        axis.title.x = element_text(color="black", size=8, face="bold"),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"))
+
+fig_s15
+jpeg("fig_s15.jpeg", units = "in", width=6, height=4, res=300)
+print(fig_s15)
+dev.off()
+``` 
+
+
+
+```{r}
+####### STATISTICAL ANALYSES######
+## Are data normally distributed? p<0.05 means null hypothesis that data are normal is false
+shapiro.test(df$legiolert_mpn100ml)
+shapiro.test(df$cl_tot_mgl)
+shapiro.test(df$pH)
+shapiro.test(df$temp_c)
+shapiro.test(df$gc_L)
+```
+
+
+```{r}
+## Dataframe for PCA and glmm
+df_building <- as.data.frame(bldg_data)
+# str(df_building)
+df_famd <- merge(df, df_building, by= c("building_id"), all=T )
+colnames(df_famd)
+df_famd<- df_famd %>%
+  mutate(outlet_num=as.numeric(outlet_num)) %>%
+  mutate(tot_floors=as.numeric(tot_floors))
+```
+
+
+```{r}
+#PCA
+#followed instructions here https://www.datacamp.com/community/tutorials/pca-analysis-r
+library(devtools)
+library(ggbiplot)
+```
+
+```{r}
+#trim down df to just columns that we want to input to the PCA
+keep= c( "site_id", "pH", "temp_c", "cl_tot_mgl", "legiolert_mpn100ml" ,  "disinfectant",  "tot_floors", "building_age", "building_id") #be careful not to add variables we're not using here because we'll lose data
+df_quant <- df_famd  %>% select(keep) %>% drop_na() %>%
+  dplyr::rename("Temp"="temp_c") %>%
+  dplyr::rename("Chlor(mg/L)" = "cl_tot_mgl") %>%
+  dplyr::rename("Legio(MPN/100mL)"="legiolert_mpn100ml") %>%
+  dplyr::rename("Disinfectant"= "disinfectant") %>%
+  dplyr::rename("#Floors" = "tot_floors") %>%
+  dplyr::rename("Bldg_Age"="building_age") %>%
+  dplyr::rename("Bldg_ID"="building_id")
+keep.pca <- c("Chlor(mg/L)",  "Temp","pH", "#Floors", "Bldg_Age", "Legio(MPN/100mL)")
+df.pca <- prcomp(df_quant[keep.pca], center= TRUE, scale.=TRUE)
+summary(df.pca)
+pca_site <- ggbiplot(df.pca, choices= c(1,2), ellipse=F, groups= df_quant$site_id, labels.size = 6, varname.size = 3.5)+
+  scale_colour_viridis_d(name= "Origin", option = "H")+
+  theme_minimal(base_size=12)+
+  theme(legend.position= "bottom", axis.title = element_text(size = 12), aspect.ratio = 1, legend.title = element_blank())+
+  coord_cartesian(ylim=c(-4,6), xlim=c(-3,3))
+pca_site
+png("pca_site.png", units = "in", width=5, height=5, res=300)
+print(pca_site)
+dev.off()
+```
+
+
+```{r}
+#PCA by culture positivity
+#trim down df to just columns that we want to input to the PCA
+df_quant$pos_neg <- df_quant$`Legio(MPN/100mL)` > 0.5
+df_quant$pos_neg[df_quant$pos_neg == TRUE] <- "Lp_pos"
+df_quant$pos_neg[df_quant$pos_neg == FALSE] <- "Lp_neg"
+keep.pca <- c("Chlor(mg/L)","Temp","#Floors","pH","Bldg_Age")
+df.pca <- prcomp(df_quant[keep.pca], center= TRUE, scale.=TRUE)
+summary(df.pca)
+pca_pos <- ggbiplot(df.pca, choices= c(1,2), ellipse=TRUE, groups= df_quant$pos_neg, labels.size = 6, varname.size = 4)+
+  scale_colour_manual(name= "Origin", values= c("#fccd25", "#6e00a8"), labels=c("Culture-Negative", "Culture-Positive"))+
+  theme_minimal(base_size = 12)+
+  theme(legend.position= "bottom", axis.title = element_text(size = 12), aspect.ratio = 1, legend.title = element_blank())+
+  coord_cartesian(ylim=c(-4,5), xlim=c(-3,3))
+pca_pos
+png("pca_pos.png", units = "in", width=5, height=5, res=300)
+print(pca_pos)
+dev.off()
+```
+
+```{r}
+## ggarrange the PCAs (total, just free chlorine, just chloramines)
+fig_s17<- ggarrange(pca_pos,pca_site, ncol = 2,nrow=1, common.legend = FALSE, legend = "bottom", align = "hv",hjust=-1,  labels= c("A", "B"), font.label = list(size = 9, color = "black", face = "bold", family = NULL))
+fig_s17
+png("fig_s17.png", units = "in", width=8, height=5, res=400)
+print(fig_s17)
+dev.off()
+```
+
+
+```{r}
+##estimating risk
+cfu<- df %>%
+  mutate(mpn_l= legiolert_mpn100ml*10) %>%
+  mutate(cfu_l= mpn_l/1.2)
+##using 50,000 CFU/L
+nasem<- cfu %>%
+  mutate(risk= ifelse(cfu_l>=5E4, "yes", "no")) %>%
+  dplyr::group_by(risk) %>%
+  dplyr::summarise(n=n())
+##using 1,000 CFU/L
+ewgli<- cfu %>%
+  mutate(risk= ifelse(cfu_l>=1E3, "yes", "no")) %>%
+  dplyr::group_by(risk,building_id) %>%
+  dplyr::summarise(n=n())
+##using 14.4 CFU/L for showers
+hamilton<- cfu %>%
+  filter(tap_type== "shower") %>%
+  mutate(risk= ifelse(cfu_l>=14.4, "yes", "no")) %>%
+  dplyr::group_by(risk,building_id) %>%
+  dplyr::summarise(n=n())
+```
+
+```{r}
+##https://tbrieder.org/epidata/course_e_ex03_task.pdf 
+##generalized linear model for Lp positivity
+## df with only quantitative variables
+model_data<- df_famd %>%
+  mutate(lp_pos= ifelse(legiolert_mpn100ml>0.5,1,0)) %>%
+  filter(disinfectant == "free_chlorine") %>%
+  filter(!is.na(pH)) %>%
+  filter(!is.na(cl_tot_mgl)) %>%
+  filter(!is.na(temp_c)) %>%
+  mutate(disinfectant= as.character(disinfectant)) 
+```
+
+```{r}
+##mixed effects model w/ random effect for building
+library(lme4)
+#controlling for building and dependence in samples from the same
+library(dplyr)
+glm1<- model_data%>%
+ mutate(building_id=as.character(building_id)) %>%
+ mutate(lp_pos=as.factor(lp_pos)) %>%
+ select(building_id, cl_tot_mgl,building_age, temp_c, pH, tot_floors, lp_pos)
+
+output<-glmer(formula = lp_pos ~cl_tot_mgl + building_age+ temp_c+ pH+(1|building_id), data=glm1, family=binomial)
+
+summary(output)
+```
+
+```{r}
+leg_pos<- df %>%
+  mutate(lp_pos= ifelse(legiolert_mpn100ml>0.5, "positive", "negative")) %>%
+  dplyr::group_by(lp_pos, `condition`, `disinfectant`, .drop = FALSE) %>%
+  dplyr::summarize(n=n()) %>%
+  dplyr::group_by(`condition`, `disinfectant`, .drop = FALSE) %>%
+  mutate("percentage" = n/sum(n)*100) %>%
+  ungroup %>%
+  mutate(`percentage`=ifelse(percentage!="NaN",`percentage`,0)) %>%
+  filter(lp_pos=="positive") %>%
+  mutate(n_label= paste("n",n,sep = "="))
+  
+FigS6a <- leg_pos %>%
+  ggplot(aes(x =disinfectant, y=percentage)) +
+  geom_col(aes(fill=condition), position = "dodge", color="black") + 
+  ylab("% Positive Legiolert Samples") + 
+  ylim(0, 100)+
+  xlab(" ") +
+  #scale_fill_viridis_d(name= "Disnfectant", labels = c("Monochloramine", "Free Chlorine", "None"))+
+  scale_x_discrete(labels = c("Free Chlorine","Monochloramine", "None"))+
+  #scale_fill_manual(values = c("#440154FF", "#1F968BFF"))+
+  scale_fill_viridis_d(begin=0.2, end=0.6,option="A",name= "Type", labels = c("first_draw"= "First Draw", "flushed"= "Flushed"))+
+  geom_text(aes(x =disinfectant,y=percentage,label=n_label, group=condition), position = position_dodge(width = 1), vjust = -0.5, size = 3.5)+
+  theme_classic(base_size=12)+
+  theme(legend.position="bottom",
+        legend.title = element_blank(),
+        legend.margin = unit(x=c(0,0,0,0),units="mm"),
+        legend.key.size = unit(0.3, 'cm'),
+        legend.text = element_text(color="black", size=9),
+        axis.title.y =element_text(size=9, face="bold"), 
+        axis.title.x =element_text(size=9, face="bold"), 
+        axis.text.x = element_text(color="black", size=9),
+        axis.text.y = element_text(color="black", size=9))
+FigS6a
+```
+
+```{r}
+legio_pos_qpcr<- qPCR_ddpcr %>% 
+  mutate(gc_pos= ifelse(BLoD>0, "positive", "negative")) %>%
+  dplyr::group_by(gc_pos, `condition`, `disinfectant`, .drop = FALSE) %>%
+  dplyr::summarize(n=n()) %>%
+  group_by(`condition`, `disinfectant`, .drop = FALSE) %>%
+  filter(disinfectant !="none") %>%
+  mutate("percentage" = n/sum(n)*100) %>%
+  ungroup %>%
+  mutate(`percentage`=ifelse(percentage!="NaN",`percentage`,0)) %>%
+  filter(gc_pos=="positive") %>%
+  mutate(n_label= paste("n",n,sep = "="))
+FigS6b<- legio_pos_qpcr %>%
+    ggplot(aes(x =disinfectant, y=percentage)) +
+  geom_col(aes(fill=condition), position = "dodge", color="black") + 
+  ylab("% Positive qPCR/ddPCR Samples") + 
+  ylim(0, 100)+
+  xlab(" ") +
+  scale_x_discrete(labels = c("Free Chlorine","Monochloramine"))+
+  #scale_fill_manual(values = c("#440154FF", "#1F968BFF"))+
+  scale_fill_viridis_d(begin=0.2, end=0.6,option="D",name= "Type", labels = c("first_draw"= "First Draw", "flushed"= "Flushed"))+
+  geom_text(aes(x =disinfectant,y=percentage,label=n_label, group=condition), position = position_dodge(width = 1), vjust = -0.5, size = 3.5)+
+  theme_classic(base_size=12)+
+  theme(legend.position="bottom",
+        legend.title = element_blank(),
+        legend.key.size = unit(0.3, 'cm'),
+        legend.margin = unit(x=c(0,0,0,0),units="mm"),
+        legend.text = element_text(color="black", size=9),
+        axis.title.y =element_text(size=9, face="bold"), 
+        axis.title.x =element_text(size=9, face="bold"), 
+        axis.text.x = element_text(color="black", size=9),
+        axis.text.y = element_text(color="black", size=9))
+  FigS6b
+```
+
+```{r}
+## Legiolert positives by Cl concentration --- qPCR
+bins<-c(0, 0.1, 0.2, 0.3, 0.4, 10) 
+tags<- c("0 to 0.1", "0.1 to 0.2","0.2 to 0.3", "0.3 to 0.4", ">0.4")
+legio_and_cl_qpcr <- df %>%
+  mutate(disinfectant=factor(disinfectant, order = TRUE, levels =c('chloramines','free_chlorine', 'none'))) %>%
+  filter(site_id.y != "CH") %>%  #only ds systems with disinfection
+  filter(!is.na(gc_L)) %>%       #samples with qPCR results
+  filter(BLoD>0) %>%           #positive qPCR results
+  filter(!is.na(cl_tot_mgl)) #samples with Cl measurements
+legio_and_cl_qpcr_binned <- legio_and_cl_qpcr %>%
+  dplyr::group_by(gc_L, Bin= cut(cl_tot_mgl, bins, include.lowest= TRUE, labels= tags)) %>%
+  dplyr::group_by(Bin, disinfectant, .drop = FALSE) %>%
+   dplyr::summarize(n=n()) %>%
+  mutate(n_label= paste("n",n,sep = "="))
+## Count of Leg positives by Cl bins
+FigS6d<- legio_and_cl_qpcr_binned %>%
+  filter(disinfectant== "free_chlorine") %>% #free chlorine only
+  ggplot(aes(x =Bin , y =n)) +
+  geom_col(aes(fill=disinfectant), color="black") + 
+  scale_y_continuous(breaks=c(0,10,20, 30, 40), limits=c(0,45), expand = c(0,0))+
+  ylab("# qPCR/ddPCR Positive Samples") + 
+  xlab("Chlorine Concentration (mg/L Cl2)") + 
+  scale_fill_viridis_d(begin=0.4, end=0.8, option="D")+
+  labs(fill="Disinfectant")+
+  geom_text(aes(y=n+2,label=n_label), size=3.5)+
+  theme_classic(base_size=12)+
+  theme(legend.position="none",
+        axis.title.y =element_text(size=9, face="bold"), 
+        axis.title.x =element_text(size=9, face="bold"), 
+        axis.text.x = element_text(color="black", size=9),
+        axis.text.y = element_text(color="black", size=9))
+FigS6d
+```
+
+```{r}
+## Legiolert positives by Cl concentration --- Legiolert
+
+bins<-c(0, 0.1, 0.2, 0.3, 0.4, 10) 
+tags<- c("0 to 0.1", "0.1 to 0.2","0.2 to 0.3", "0.3 to 0.4", ">0.4")
+legio_and_cl <- df %>%
+  mutate(disinfectant=factor(disinfectant, order = TRUE, levels =c('chloramines','free_chlorine', 'none'))) %>%
+  filter(site_id.y != "CH") %>%#only samples with CL result
+  filter(!is.na(cl_tot_mgl)) %>%
+  filter(legiolert_mpn100ml> 0.55) #only samples with pos Legiolert result
+legio_and_cl_binned <- legio_and_cl %>%
+  dplyr::group_by(legiolert_mpn100ml, Bin= cut(cl_tot_mgl, bins, include.lowest= TRUE, labels= tags)) %>%
+group_by(Bin,disinfectant, .drop = FALSE) %>%
+  dplyr::summarize(n=n()) %>%
+    filter(disinfectant !="none")%>%
+  mutate(n_label= paste("n",n,sep = "="))
+## Count of Leg positives by Cl bins
+FigS6c<- legio_and_cl_binned %>%
+  filter(disinfectant== "free_chlorine") %>% #free chlorine only
+  ggplot(aes(x =Bin , y =n)) +
+  geom_col(aes(fill=disinfectant), color="black") + 
+  scale_y_continuous(breaks=c(0,10,20, 30, 40), limits=c(0,45), expand = c(0,0))+
+  ylab("# Legiolert Positive Samples") + 
+  xlab("Chlorine Concentration (mg/L Cl2)") + 
+  #scale_fill_manual(values = c("#1F968BFF", "#440154FF"))+
+  scale_fill_viridis_d(begin=0.4, end=0.8, option="A")+
+  labs(fill="Disinfectant")+
+  geom_text(aes(y=n+2,label=n_label), size=3.5)+
+  theme_classic(base_size=12)+
+  theme(legend.position="none",
+        axis.title.y =element_text(size=9, face="bold"), 
+        axis.title.x =element_text(size=9, face="bold"), 
+        axis.text.x = element_text(color="black", size=9),
+        axis.text.y = element_text(color="black", size=9))
+FigS6c
+```
+
+```{r}
+fig_s6<- ggarrange(FigS6a, FigS6b, FigS6c,FigS6d, ncol=2, nrow=2, align = "hv",hjust=-0.05,  labels= c("A", "B", "C", "D"), font.label = list(size = 9, color = "black", face = "bold", family = NULL))
+fig_s6
+png("fig_s6.png", units = "in", width=9, height=6, res=600)
+print(fig_s6)
+dev.off()
+```
