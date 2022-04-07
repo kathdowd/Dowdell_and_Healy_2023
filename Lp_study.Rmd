@@ -261,7 +261,6 @@ df_long <- pivot_longer(data_subset,
                         values_to = 'value')
 head(df_long)
 ```
-
 ```{r}
 ##total buildings by disinfectant
 total_buildings<- df %>%
@@ -559,12 +558,12 @@ fig_1a<- leg_fig1 %>%
   annotate(geom = "rect", xmin = 0, xmax = 14.5, ymin = 1, ymax = 1E5, fill = "#33638d", alpha = 0.15)+
   annotate(geom = "rect", xmin = 14.5, xmax = 25.5, ymin = 1, ymax = 1E5, fill = "#95d840", alpha = 0.1)+
   annotate(geom = "rect", xmin = 25.5, xmax = 26.5, ymin = 1, ymax = 1E5, fill = "#5901a5",alpha = 0.1)+
-  geom_jitter(aes(color= condition), size=2, alpha=0.7,  position=position_dodge(0.3)) + 
+  geom_jitter(aes(fill= condition, shape=condition), size=2, alpha=0.7,  position=position_dodge(0.8)) + 
   geom_hline(yintercept=10, linetype="dashed")+ 
   geom_hline(yintercept=22726, linetype="dotted")+ 
-  #scale_shape_manual(values = c("negative"=22, "positive"=16), labels=c("Negative", "Positive"))+
+ scale_shape_manual(values = c(22, 23), labels=c("First Draw", "Flushed"))+
   scale_y_log10(breaks = c(1, 10, 100, 1E3,1E4, 1E5), limits = c(1, 1E5), labels = trans_format("log10", math_format(10^.x)), expand=c(0,0))+
-  scale_color_viridis_d(begin = 0.3, end = 0.8, labels = c("First Draw", "Flushed"))+
+  scale_fill_viridis_d(begin = 0.3, end = 0.8, labels = c("First Draw", "Flushed"))+
   labs(x= "Building", y= "*L. pneumophila* (MPN/L)")+
   theme_classic(base_size=10)+
   theme(legend.position="top",
@@ -584,16 +583,20 @@ dev.off()
 
 ```{r}
 ##Figure 1B - L. pneumophila MPN/L by disinfectant and sample type
+library(ggnewscale)
+
 fig_1b<- df %>%
   filter(disinfectant !="none")%>%
   mutate(disinfectant=factor(disinfectant, order = TRUE, levels =c("free_chlorine", "chloramines"))) %>%
   ggplot(aes(x=disinfectant, y= legiolert_mpn100ml*10))+
   geom_boxplot(aes(fill=disinfectant), outlier.shape = NA, alpha=0.3)+
-  geom_jitter(aes(color=condition), size=2, alpha=0.7,  position=position_dodge(0.3), show_guide = FALSE)+
+  scale_fill_manual(values=c("#33638d", "#95d840"), labels=c("Free Chlorine","Monochloramine"))+
+  new_scale_fill()+
+  geom_jitter(aes(fill=condition, shape=condition), size=2, alpha=0.7,  position=position_dodge(0.3), show_guide = FALSE)+
+  scale_shape_manual(values = c(22, 23))+
+  scale_fill_viridis_d(begin = 0.3, end = 0.8, label = c("First Draw", "Flushed"))+
   geom_hline(yintercept = 10, linetype="dashed")+
   geom_hline(yintercept = 22726, linetype="dotted")+
-  scale_fill_manual(values=c("#33638d", "#95d840"), labels=c("Free Chlorine","Monochloramine"))+
-  scale_color_viridis_d(begin = 0.3, end = 0.8, label = c("First Draw", "Flushed"))+
   scale_x_discrete(labels=c("Free Chlorine","Monochloramine","None"))+
   labs(x= "Disinfectant", y= "*L. pneumophila* (MPN/L)")+
   scale_y_log10(breaks = c(1, 10, 100, 1E3,1E4, 1E5), limits = c(1, 1E5), labels = trans_format("log10", math_format(10^.x)), expand=c(0,0))+
@@ -870,11 +873,18 @@ cl_high<- with_cl %>%
 cl_high_free<- cl_high %>%
   filter(disinfectant== "free_chlorine")
 
-## number of samples w/ Cl of at least <0.1 mg/L
+## number of samples w/ measurable Cl
+cl_dl_1<- 0.02
+cl_dl_2<- 0.05
+
 cl_low<- with_cl %>%
-  filter(cl_tot_mgl<=0.1)
-cl_low_pos<- cl_low %>%
-  filter(legiolert_mpn100ml >0.5)
+  mutate(cl_tot_dl= ifelse(site_id %in% c("AZ", "CA", "IN",  "MA", "QC", "WV"), 0.02,0.05)) %>%
+  mutate(cl_detect= ifelse(cl_tot_mgl>=cl_tot_dl, "detect", "BDL"))
+
+cl_low_fdsum <- cl_low %>%
+  filter(condition=="first_draw") %>%
+  group_by(cl_detect) %>%
+  summarise(n=n())
 
 mono_lowcl<- with_cl %>%
   filter(disinfectant== "chloramines") %>%
