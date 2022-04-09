@@ -1,0 +1,156 @@
+---
+title: "site_map"
+output: html_document
+---
+
+## R Markdown
+#This R pipeline was written by Katherine Dowdell and Hannah Greenwald to create the site map for the associated manuscript, Dowdell and Greenwald et al., Legionella pneumophila occurence in reduced-occupancy buildings in 11 cities during the COVID-19 pandemic
+```{r}
+##Uncomment to install required packages
+#install(googlesheets)
+#install(tidyverse)
+#install(readxl)
+#install(data.table)
+#install(formattable)
+#install(PerformanceAnalytics)
+#install(cowplot)
+#install(dplyr)
+#install(rgeos)
+#install(sf)
+#install(maps)
+#install.packages(rnaturalearth)
+#install(viridis)
+#install(ggrepel)
+#install(ggnewscale)
+#install.packages("sp")
+#devtools::install_github("ropensci/rnaturalearthhires")
+#library("rnaturalearth")
+```
+
+```{r}
+##load packages
+library("devtools")
+library("tidyverse")
+library(readxl)
+library(data.table)
+library(formattable)
+library(PerformanceAnalytics)
+library(cowplot)
+library("dplyr")
+library("googlesheets4")
+library("googledrive")
+library('httpuv')
+library('ggplot2')
+library('scales')
+library('repr')
+library('tidyr')
+library('viridis')
+library('ggpubr')
+library('lubridate')
+library("corrplot")
+library("RColorBrewer")
+library("Hmisc")
+library("GGally")
+library("forcats")
+library(googlesheets)
+library(tidyverse)
+library(readxl)
+library(data.table)
+library(formattable)
+library(PerformanceAnalytics)
+library(cowplot)
+library(dplyr)
+library(rgeos)
+library(sf)
+library(maps)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(viridis)
+library(ggrepel)
+library(ggnewscale)
+library(sp)
+```
+
+```{r}
+##read in data files-> save to same directory as R code or change path
+
+##importing map data
+mapdata<- read_excel("site_map.xlsx", sheet = "mapdata")
+```
+
+
+```{r}
+samploc<- mapdata %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, agr = "constant")
+
+state_prov <- ne_states(c("united states of america", "canada"), returnclass = "sf") %>%
+  select(name, woe_name, geometry)
+
+#filtering by states where samples were collected
+world_samp1 <- state_prov %>%
+  filter(woe_name == "Michigan" | woe_name == "California" | woe_name == "Virginia" | woe_name == "West Virginia" | woe_name == "Québec" | woe_name == "Massachusetts" | woe_name == "Pennsylvania"| woe_name == "Indiana" | woe_name== "Arizona" | woe_name== "Ohio")
+
+subset_states<- world_samp1 %>%
+  select(name, geometry)
+
+## swiss data
+#loading map of europe
+europe <- rnaturalearth::ne_countries(scale= 'medium', returnclass = "sf", continent = "Europe")
+
+#loading rnaturalearth data for switzerland
+switzerland<- europe %>%
+  filter(subunit=="Switzerland") %>%
+  select(name, geometry)
+  
+## state sf + swiss sf
+combined_sf<- rbind(subset_states, switzerland)
+
+##combining sf's with data so I can color states using building data 
+combined<- st_join(combined_sf, samploc)
+
+```
+
+```{r}
+#plot of US and Canadian sites
+us_plot<- ggplot(data = state_prov)+
+  geom_sf(fill="whitesmoke", size=0.1)+
+  geom_sf(data=combined, size=0.1, color="grey", aes(fill=disinfectant))+
+  geom_sf(data= samploc, size = 7, shape = 19, color="cadetblue1")+
+  scale_fill_viridis_d(option = "D", labels=c("Free Chlorine", "Chloramine", "None"), begin = 0.1, end = 1, alpha=0.9)+
+  geom_sf_text(data=samploc, aes(label=site_id), col="black", size=3,fontface="bold")+
+  coord_sf(xlim = c(-125, -57), ylim = c(25, 50), expand = FALSE)+
+ labs(fill="Disinfectant")+
+    theme_void()+
+  theme(legend.position = "left", legend.box.margin = margin(0,0,0,0))
+
+us_plot
+
+```
+```{r}
+#Plot of Swiss site
+swiss_plot<- ggplot(data = europe)+
+  geom_sf(fill="whitesmoke", size=0.1)+
+  geom_sf(data=combined, size=0.05, color="grey", aes(fill=disinfectant))+
+  scale_fill_viridis_d(option = "D", labels=c("Free Chlorine", "Chloramine", "None"), begin = 0.1, end = 1, alpha=0.9)+
+    geom_sf(data= samploc, size = 7, shape = 19, color="cadetblue1")+
+  geom_sf_text(data=samploc, aes(label=site_id), col="black", size=3,fontface="bold")+
+  coord_sf(xlim = c(-5, 20), ylim = c(38, 53), expand = FALSE)+
+    theme_void()+
+    theme(legend.position = "none", panel.border = element_rect(colour = "black", fill=NA, size=2))
+
+swiss_plot
+```
+
+```{r}
+##Combined plot
+site_map1<- 
+   ggdraw() +
+  draw_plot(us_plot) +
+  draw_plot(swiss_plot, x = 0.75, y = .26, width = .27, height = .27)
+
+site_map1
+
+tiff("site_map1.tiff", units = "in", width=12, height=6, res=800)
+print(site_map1)
+dev.off()
+```
