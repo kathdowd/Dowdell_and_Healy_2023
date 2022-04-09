@@ -3,7 +3,7 @@
 output: html_document
 ---
   
-  ## R Markdown
+## R Markdown
   
 #This R pipeline was written by Katherine Dowdell and Hannah Greenwald for the associated manuscript, Dowdell and Greenwald et al., Legionella pneumophila occurence in reduced-occupancy buildings in 11 cities during the COVID-19 pandemic
   
@@ -573,10 +573,10 @@ fig_1a<- leg_fig1 %>%
         axis.text.y =element_text(size=8,face="bold", color="black"), 
         legend.title=element_blank(),
         legend.text =element_text(size=10,face="bold", color="black"), 
-        legend.box.margin = unit(c(0,0,0,0), "cm"),
-        plot.margin=unit(c(0.5,1,1,1), "cm"))
+        legend.box.margin = unit(c(0,0,0,0), "cm"))
+        #plot.margin=unit(c(0.5,1,1,1), "cm"))
 fig_1a
-jpeg("fig_1a.jpeg", units = "in", width=7, height=5, res=400)
+tiff("fig_1a.tiff", units = "in", width=7, height=5, res=400)
 print(fig_1a)
 dev.off()
 ```
@@ -609,7 +609,7 @@ fig_1b<- df %>%
         legend.title=element_blank(),
         legend.text =element_text(size=8,face="bold", color="black"))
 fig_1b
-jpeg("fig_1b.jpeg", units = "in", width=3, height=4, res=300)
+tiff("fig_1b.tiff", units = "in", width=3, height=4, res=300)
 print(fig_1b)
 dev.off()
 ```
@@ -636,7 +636,7 @@ fig_s3 <- df %>%
         axis.text.y =element_text(size=8,face="bold", color="black"), 
         legend.title=element_blank(),
         legend.text =element_text(size=6,face="bold", color="black"),
-        plot.margin=unit(c(1,1,-0.5,1), "cm"),
+        #plot.margin=unit(c(1,1,-0.5,1), "cm"),
         legend.position = "top",
         legend.key.height = unit(0.4, 'cm'),
         legend.key.width = unit(0.1, 'cm'),
@@ -644,7 +644,7 @@ fig_s3 <- df %>%
         legend.text.align = (0))
 
 fig_s3
-jpeg("fig_s3.jpeg", units = "in", width=8, height=4, res=600)
+tiff("fig_s3.tiff", units = "in", width=8, height=4, res=600)
 print(fig_s3)
 dev.off()
 ```
@@ -673,7 +673,7 @@ fig_s4<- df %>%
         legend.title=element_blank(),
         legend.text =element_text(size=6,face="bold", color="black"))
 fig_s4
-jpeg("fig_s4.jpeg", units = "in", width=7, height=5, res=400)
+tiff("fig_s4.tiff", units = "in", width=7, height=5, res=400)
 print(fig_s4)
 dev.off()
 ```
@@ -799,6 +799,11 @@ with_cond<- df %>%
 #overall cl median (n=182)
 median(with_cl$cl_tot_mgl)
 
+##fd cl
+cl_fd<- with_cl %>%
+  filter(condition== "first_draw")
+median(cl_fd$cl_tot_mgl)
+
 ##monocl median cl (n=69)
 mono_cl<- with_cl %>%
   filter(disinfectant== "chloramines")
@@ -828,42 +833,6 @@ median(free_clfd$cl_tot_mgl)
 free_clflush<- free_cl %>%
   filter(condition== "flushed")
 median(free_clflush$cl_tot_mgl)
-
-### Chlorine positivity using <0.05 as the cut off for positive samples
-cl_posneg<- with_cl %>%
-  mutate(`pos_neg` = ifelse(cl_tot_mgl < 0.05, "negative","positive"))
-
-#total samples by cl positivity
-cl_posneg_sum<- cl_posneg %>%
-  dplyr::group_by(pos_neg) %>%
-  dplyr::summarise(n=n())
-
-#FD samples by cl positivity
-cl_fd<- cl_posneg %>%
-  filter(condition == "first_draw") 
-
-cl_fd_sum<- cl_posneg %>%
-  filter(condition == "first_draw") %>%
-  dplyr::group_by(`pos_neg`) %>%
-  dplyr::summarise(n=n())
-
-cl_fd_sumdis<- cl_posneg %>%
-  filter(condition == "first_draw") %>%
-  dplyr::group_by(`pos_neg`, disinfectant) %>%
-  dplyr::summarise(n=n())
-
-#Flushed samples by cl positivity
-cl_flush<- cl_posneg %>%
-  filter(condition == "flushed") 
-cl_flush_sum<- cl_posneg %>%
-  filter(condition == "flushed") %>%
-  dplyr::group_by(`pos_neg`, disinfectant) %>%
-  dplyr::summarise(n=n())
-
-#total samples by cl positivity and disinfectant
-cl_posneg_dis<- cl_posneg %>%
-  group_by(`pos_neg`, disinfectant) %>%
-  dplyr::summarise(n=n())
 
 ## number of samples w/ Cl of at least 0.4 mg/L
 cl_high<- with_cl %>%
@@ -963,7 +932,7 @@ fig_s5<- FigS5_data %>%
   theme(strip.text.x = element_text(size=0), 
         strip.background = element_blank())
 fig_s5
-jpeg("fig_s5.jpeg", units = "in", width=8, height=7, res=800)
+tiff("fig_s5.tiff", units = "in", width=8, height=7, res=800)
 print(fig_s5)
 dev.off()
 ```
@@ -996,7 +965,7 @@ fig_2a<- with_cl %>%
     axis.text.y = element_text(color="black"), 
     plot.margin=unit(c(0,0,0,0), "cm"))
 fig_2a
-jpeg("fig_2a.jpeg", units = "in", width=2.5, height=3, res=600)
+tiff("fig_2a.tiff", units = "in", width=2.5, height=3, res=600)
 print(fig_2a)
 dev.off()
 
@@ -1023,7 +992,7 @@ fig_2b<- with_ph %>%
     axis.text.y = element_text(color="black"),
     plot.margin=unit(c(0,0,0,0), "cm"))
 fig_2b
-jpeg("fig_2b.jpeg", units = "in", width=2.5, height=3, res=600)
+tiff("fig_2b.tiff", units = "in", width=2.5, height=3, res=600)
 print(fig_2b)
 dev.off()
 
@@ -1050,14 +1019,14 @@ fig_2c<- with_temp %>%
     axis.text.y = element_text(color="black"),
     plot.margin=unit(c(0,0,0,0), "cm"))
 fig_2c
-jpeg("fig_2c.jpeg", units = "in", width=2.5, height=3, res=600)
+tiff("fig_2c.tiff", units = "in", width=2.5, height=3, res=600)
 print(fig_2c)
 dev.off()
 
 fig_2<- ggarrange(fig_2a,fig_2b,fig_2c, ncol=3, nrow=1, font.label = list(size = 10, color = "black", face = "bold", family = NULL), legend = "top", common.legend = T, align = c("hv"))
 fig_2
 
-jpeg("fig_2.jpeg", units = "in", width=6, height=4, res=600)
+tiff("fig_2.tiff", units = "in", width=6, height=4, res=600)
 print(fig_2)
 dev.off()
 ```
@@ -1447,7 +1416,7 @@ fig_3a<- df %>%
   geom_text(aes(x=5, y=5),label="1:1", angle=45, vjust=-0.5,hjust=1)
 
 fig_3a
-jpeg("fig_3a.jpeg", units = "in", width=6, height=4, res=300)
+tiff("fig_3a.tiff", units = "in", width=6, height=4, res=300)
 print(fig_3a)
 dev.off()
 ```
@@ -1481,7 +1450,7 @@ fig_3b<- gc_mpn_quanti %>%
   geom_hline(yintercept=log10(10), linetype="dashed")
 
 fig_3b
-jpeg("fig_3b.jpeg", units = "in", width=6, height=4, res=300)
+tiff("fig_3b.tiff", units = "in", width=6, height=4, res=300)
 print(fig_3b)
 dev.off()
 ```
@@ -1490,7 +1459,7 @@ dev.off()
 #combine figures for publication 
 fig_3<- ggarrange(fig_3a,fig_3b, ncol = 2, nrow=1, align = "hv", labels = c("A", "B"), font.label = list(size = 10))
 fig_3
-jpeg("fig_3", units = "in", width=9, height=4, res=300)
+tiff("fig_3.tiff", units = "in", width=9, height=4, res=300)
 print(fig_3)
 dev.off()
 ```
@@ -1539,7 +1508,7 @@ fig_s7<- with_cl %>%
     axis.text.y = element_text(color="black"))
 
 fig_s7
-png("fig_s7.png", units = "in", width=6, height=4, res=400)
+tiff("fig_s7.tiff", units = "in", width=6, height=4, res=400)
 print(fig_s7)
 dev.off()
 ```
@@ -1571,7 +1540,7 @@ fig_s9<- with_temp %>%
     axis.text.y = element_text(color="black"))
 
 fig_s9
-png("fig_s9.png", units = "in", width=6, height=4, res=400)
+tiff("fig_s9.tiff", units = "in", width=6, height=4, res=400)
 print(fig_s9)
 dev.off()
 ```
@@ -1599,7 +1568,7 @@ fig_s10<- with_ph %>%
     axis.text.y = element_text(color="black"))
 
 fig_s10
-png("fig_s10.png", units = "in", width=6, height=4, res=400)
+tiff("fig_s10.tiff", units = "in", width=6, height=4, res=400)
 print(fig_s10)
 dev.off()
 ```
@@ -1625,7 +1594,7 @@ fig_s11<- with_DO %>%
         axis.text.y = element_text(color="black"))
 
 fig_s11
-jpeg("fig_s11.jpeg", units = "in", width=6, height=4, res=300)
+tiff("fig_s11.tiff", units = "in", width=6, height=4, res=300)
 print(fig_s11)
 dev.off()
 ```
@@ -1654,7 +1623,7 @@ fig_s12<- with_cond %>%
 #legend.background = element_rect(linetype = 1, size = 0.5, colour = 1))
 
 fig_s12
-jpeg("fig_s12.jpeg", units = "in", width=6, height=4, res=300)
+tiff("fig_s12.tiff", units = "in", width=6, height=4, res=300)
 print(fig_s12)
 dev.off()
 ```
@@ -1903,7 +1872,7 @@ fig_s8<- paired_temp%>%
   facet_wrap(~tap_temp, labeller = as_labeller(temp_names))
 
 fig_s8
-jpeg("fig_s8.jpeg", units = "in", width=6, height=4, res=300)
+tiff("fig_s8.tiff", units = "in", width=6, height=4, res=300)
 print(fig_s8)
 dev.off()
 ``` 
@@ -1932,7 +1901,7 @@ fig_s13<- paired_temp%>%
   facet_wrap(~disinfectant, labeller = as_labeller(dis_names), scales = "free")
 
 fig_s13
-jpeg("fig_s13.jpeg", units = "in", width=6, height=4, res=300)
+tiff("fig_s13.tiff", units = "in", width=6, height=4, res=300)
 print(fig_s13)
 dev.off()
 ``` 
@@ -1985,7 +1954,7 @@ fig_s14<- df_paired %>%
         axis.text.y = element_text(color="black"))
 
 fig_s14
-jpeg("fig_s14.jpeg", units = "in", width=6, height=4, res=300)
+tiff("fig_s14.tiff", units = "in", width=6, height=4, res=300)
 print(fig_s14)
 dev.off()
 ```
@@ -2018,7 +1987,7 @@ fig_s15<- df_paired %>%
         axis.text.y = element_text(color="black"))
 
 fig_s15
-jpeg("fig_s15.jpeg", units = "in", width=6, height=4, res=300)
+tiff("fig_s15.tiff", units = "in", width=6, height=4, res=300)
 print(fig_s15)
 dev.off()
 ``` 
@@ -2071,7 +2040,7 @@ pca_site <- ggbiplot(df.pca, choices= c(1,2), ellipse=F, groups= df_quant$site_i
   theme(legend.position= "bottom", axis.title = element_text(size = 12), aspect.ratio = 1, legend.title = element_blank())+
   coord_cartesian(ylim=c(-4,6), xlim=c(-3,3))
 pca_site
-png("pca_site.png", units = "in", width=5, height=5, res=300)
+tiff("pca_site.tiff", units = "in", width=5, height=5, res=300)
 print(pca_site)
 dev.off()
 ```
@@ -2092,7 +2061,7 @@ pca_pos <- ggbiplot(df.pca, choices= c(1,2), ellipse=TRUE, groups= df_quant$pos_
   theme(legend.position= "bottom", axis.title = element_text(size = 12), aspect.ratio = 1, legend.title = element_blank())+
   coord_cartesian(ylim=c(-4,5), xlim=c(-3,3))
 pca_pos
-png("pca_pos.png", units = "in", width=5, height=5, res=300)
+tiff("pca_pos.tiff", units = "in", width=5, height=5, res=300)
 print(pca_pos)
 dev.off()
 ```
@@ -2101,7 +2070,7 @@ dev.off()
 ## ggarrange the PCAs (total, just free chlorine, just chloramines)
 fig_s17<- ggarrange(pca_pos,pca_site, ncol = 2,nrow=1, common.legend = FALSE, legend = "bottom", align = "hv",hjust=-1,  labels= c("A", "B"), font.label = list(size = 9, color = "black", face = "bold", family = NULL))
 fig_s17
-png("fig_s17.png", units = "in", width=8, height=5, res=400)
+tiff("fig_s17.tiff", units = "in", width=8, height=5, res=400)
 print(fig_s17)
 dev.off()
 ```
@@ -2174,7 +2143,7 @@ FigS6a <- leg_pos %>%
   ggplot(aes(x =disinfectant, y=percentage)) +
   geom_col(aes(fill=condition), position = "dodge", color="black") + 
   ylab("% Positive Legiolert Samples") + 
-  ylim(0, 100)+
+  ylim(0, 20)+
   xlab(" ") +
   #scale_fill_viridis_d(name= "Disnfectant", labels = c("Monochloramine", "Free Chlorine", "None"))+
   scale_x_discrete(labels = c("Free Chlorine","Monochloramine", "None"))+
@@ -2304,7 +2273,7 @@ FigS6c
 ```{r}
 fig_s6<- ggarrange(FigS6a, FigS6b, FigS6c,FigS6d, ncol=2, nrow=2, align = "hv",hjust=-0.05,  labels= c("A", "B", "C", "D"), font.label = list(size = 9, color = "black", face = "bold", family = NULL))
 fig_s6
-png("fig_s6.png", units = "in", width=9, height=6, res=600)
+tiff("fig_s6.tiff", units = "in", width=9, height=6, res=600)
 print(fig_s6)
 dev.off()
 ```
